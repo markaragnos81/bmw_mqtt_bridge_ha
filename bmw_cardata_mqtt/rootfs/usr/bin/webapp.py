@@ -173,6 +173,48 @@ def _block_reason_state() -> dict:
     }
 
 
+def _request_telemetry() -> dict:
+    now = time.time()
+    events = [
+        event for event in store.request_events
+        if isinstance(event, dict)
+    ]
+    last_24h = [
+        event for event in events
+        if now - float(event.get("ts", 0) or 0) <= 86400
+    ]
+    last_request = last_24h[-1] if last_24h else (events[-1] if events else None)
+    last_request_at = None
+    last_request_summary = None
+    if last_request:
+        ts = float(last_request.get("ts", 0) or 0)
+        last_request_at = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d.%m %H:%M UTC")
+        last_request_summary = f"{last_request.get('method', 'GET')} {last_request.get('endpoint', '?')} -> {last_request.get('status', '?')}"
+
+    interval_hint = "Kein periodisches HTTP-Polling aktiv"
+    auth_poll_interval_s = store.auth_poll_interval_s
+    if auth_poll_interval_s > 0:
+        interval_hint = f"BMW OneID Polling aktuell alle {auth_poll_interval_s}s"
+    elif store.next_retry_at > time.time():
+        interval_hint = "Kein HTTP-Polling; BMW MQTT Reconnect läuft im Backoff"
+    recent_spacing = None
+    if len(last_24h) >= 2:
+        ts_values = [float(event.get("ts", 0) or 0) for event in last_24h[-5:]]
+        diffs = [int(ts_values[i] - ts_values[i - 1]) for i in range(1, len(ts_values)) if ts_values[i] > ts_values[i - 1]]
+        if diffs:
+            avg_diff = int(sum(diffs) / len(diffs))
+            recent_spacing = f"Ø letzte HTTP-Abstände: {avg_diff}s"
+
+    return {
+        "request_count_24h": len(last_24h),
+        "last_request_at": last_request_at,
+        "last_request_summary": last_request_summary,
+        "request_interval_hint": interval_hint,
+        "recent_request_spacing": recent_spacing,
+        "auth_poll_interval_s": auth_poll_interval_s,
+    }
+
+
 def should_auto_start() -> bool:
     return stream_mode() == "always_on" and within_active_window()
 
@@ -431,6 +473,18 @@ PAGE = STYLE + """
   </div>
 
   <div class="card">
+    <h2>🌐 BMW Requests</h2>
+    <div class="stat-row">
+      <div class="stat"><div class="stat-val" id="req-count">{{ request_count_24h }}</div><div class="stat-lbl">HTTP Requests / 24h</div></div>
+      <div class="stat"><div class="stat-val" style="font-size:.9rem" id="req-interval">{{ auth_poll_interval_s ~ 's' if auth_poll_interval_s else '–' }}</div><div class="stat-lbl">Akt. Poll-Intervall</div></div>
+      <div class="stat"><div class="stat-val" style="font-size:.9rem" id="req-last-at">{{ last_request_at or '–' }}</div><div class="stat-lbl">Letzter BMW Request</div></div>
+    </div>
+    <div id="req-hint" style="font-size:.8rem;color:#6b7280;margin-top:.6rem">Intervall: {{ request_interval_hint }}</div>
+    <div id="req-spacing" style="font-size:.8rem;color:#6b7280">{{ recent_request_spacing or 'Ø letzte HTTP-Abstände: –' }}</div>
+    <div id="req-summary" style="font-size:.78rem;color:#9ca3af">Letzter Request: {{ last_request_summary or '–' }}</div>
+  </div>
+
+  <div class="card">
     <h2>🚗 Fahrzeuge & Sensoren</h2>
     {% for v in vehicles %}
     <div style="display:flex;justify-content:space-between;align-items:center;padding:.4rem 0{% if not loop.last %};border-bottom:1px solid #f3f4f6{% endif %}">
@@ -485,6 +539,12 @@ PAGE = STYLE + """
         document.getElementById("rate-limit").textContent = "Nächster Retry: " + (d.next_retry_at||"–") + (d.retry_countdown ? " · " + d.retry_countdown : "");
         document.getElementById("last-connect").textContent = "Letzte BMW-Verbindung: " + (d.last_connected_at||"–");
         document.getElementById("last-quota").textContent = "Letztes Rate-Limit: " + (d.last_quota_at||"–") + (d.quota_error_count ? " (" + d.quota_error_count + "x)" : "");
+        document.getElementById("req-count").textContent = d.request_count_24h;
+        document.getElementById("req-interval").textContent = d.auth_poll_interval_s ? (d.auth_poll_interval_s + "s") : "–";
+        document.getElementById("req-last-at").textContent = d.last_request_at || "–";
+        document.getElementById("req-hint").textContent = "Intervall: " + (d.request_interval_hint || "–");
+        document.getElementById("req-spacing").textContent = d.recent_request_spacing || "Ø letzte HTTP-Abstände: –";
+        document.getElementById("req-summary").textContent = "Letzter Request: " + (d.last_request_summary || "–");
         const hdrRetry = document.getElementById("hdr-retry");
         if(hdrRetry){ hdrRetry.textContent = d.retry_hint || ""; hdrRetry.style.display = d.retry_hint ? "block" : "none"; }
         const hdrBlock = document.getElementById("hdr-block");
@@ -598,15 +658,18 @@ def setup_post():
 def _poll_loop(flow: BMWDeviceFlow):
     deadline = time.time() + 300
     while time.time() < deadline:
-        time.sleep(5)
+        time.sleep(flow.interval_seconds)
         try:
             tokens = flow.poll()
             if tokens:
+                store.clear_auth_poll_interval()
                 push_sse("auth_ok", {})
                 return
         except Exception as exc:
+            store.clear_auth_poll_interval()
             push_sse("auth_error", {"message": str(exc)})
             return
+    store.clear_auth_poll_interval()
     push_sse("auth_error", {"message": "Zeitüberschreitung – bitte erneut versuchen."})
 
 
@@ -708,6 +771,7 @@ def status_json():
     exp_str = datetime.fromtimestamp(exp_ts, tz=timezone.utc).strftime("%d.%m %H:%M UTC") if exp_ts else "?"
     retry_state = _retry_ui_state()
     block_state = _block_reason_state()
+    request_state = _request_telemetry()
     return jsonify({
         "status":        b.status if b else "stopped",
         "message_count": b.message_count if b else 0,
@@ -724,6 +788,12 @@ def status_json():
         "last_connected_at": store.last_connected_at,
         "last_quota_at": store.last_quota_at,
         "quota_error_count": store.quota_error_count,
+        "request_count_24h": request_state["request_count_24h"],
+        "last_request_at": request_state["last_request_at"],
+        "last_request_summary": request_state["last_request_summary"],
+        "request_interval_hint": request_state["request_interval_hint"],
+        "recent_request_spacing": request_state["recent_request_spacing"],
+        "auth_poll_interval_s": request_state["auth_poll_interval_s"],
     })
 
 
@@ -748,6 +818,7 @@ def _dashboard_context() -> dict:
     exp_str = datetime.fromtimestamp(exp_ts, tz=timezone.utc).strftime("%d.%m %H:%M UTC") if exp_ts else "?"
     retry_state = _retry_ui_state()
     block_state = _block_reason_state()
+    request_state = _request_telemetry()
     sel_vins = ov.get("selected_vins", [])
     vehicles = [v for v in (ov.get("vehicles") or []) if v["vin"] in sel_vins]
     return {
@@ -766,6 +837,12 @@ def _dashboard_context() -> dict:
         "last_connected_at": store.last_connected_at,
         "last_quota_at": store.last_quota_at,
         "quota_error_count": store.quota_error_count,
+        "request_count_24h": request_state["request_count_24h"],
+        "last_request_at": request_state["last_request_at"],
+        "last_request_summary": request_state["last_request_summary"],
+        "request_interval_hint": request_state["request_interval_hint"],
+        "recent_request_spacing": request_state["recent_request_spacing"],
+        "auth_poll_interval_s": request_state["auth_poll_interval_s"],
         "stream_mode": stream_mode(),
         "vehicles": vehicles,
         "sensor_count": len(BMWMQTTBridge.SENSORS),

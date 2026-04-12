@@ -136,6 +136,35 @@ class BMWTokenStore:
     def quota_error_count(self) -> int:
         return int(self._data.get("quota_error_count", 0) or 0)
 
+    @property
+    def request_events(self) -> list[dict]:
+        events = self._data.get("request_events", [])
+        return events if isinstance(events, list) else []
+
+    @property
+    def auth_poll_interval_s(self) -> int:
+        return int(self._data.get("auth_poll_interval_s", 0) or 0)
+
+    def record_request(self, endpoint: str, status_code: int | str, method: str = "GET"):
+        now = time.time()
+        events = [
+            event for event in self.request_events
+            if isinstance(event, dict) and now - float(event.get("ts", 0) or 0) < 7 * 86400
+        ]
+        events.append({
+            "ts": now,
+            "endpoint": endpoint,
+            "status": str(status_code),
+            "method": method,
+        })
+        self.save({"request_events": events[-250:]})
+
+    def clear_auth_poll_interval(self):
+        self.save({"auth_poll_interval_s": 0})
+
+    def set_auth_poll_interval(self, seconds: int):
+        self.save({"auth_poll_interval_s": max(0, int(seconds or 0))})
+
 
 # ── OAuth2 Device Flow ────────────────────────────────────────────────────────
 
@@ -162,12 +191,14 @@ class BMWDeviceFlow:
             },
             timeout=15,
         )
+        self.store.record_request("device_code", resp.status_code, method="POST")
         if resp.status_code != 200:
             raise BMWAuthError(f"Device code request failed {resp.status_code}: {resp.text}")
         data = resp.json()
         user_code = data["user_code"]
         self._device_code = data["device_code"]
         self._interval    = int(data.get("interval", 5))
+        self.store.set_auth_poll_interval(self._interval)
         verification_uri = _sanitize_verification_uri(
             data.get("verification_uri"),
             user_code=user_code,
@@ -198,13 +229,24 @@ class BMWDeviceFlow:
             },
             timeout=15,
         )
+        self.store.record_request("token_poll", resp.status_code, method="POST")
         if resp.status_code == 200:
+            self.store.clear_auth_poll_interval()
             return self._process(resp.json())
         body = resp.json() if "application/json" in resp.headers.get("content-type", "") else {}
         err  = body.get("error", "")
-        if err in ("authorization_pending", "slow_down"):
+        if err == "slow_down":
+            self._interval = min(self._interval + 5, 30)
+            self.store.set_auth_poll_interval(self._interval)
             return None
+        if err == "authorization_pending":
+            return None
+        self.store.clear_auth_poll_interval()
         raise BMWAuthError(f"Poll failed {resp.status_code}: {err} – {body.get('error_description','')}")
+
+    @property
+    def interval_seconds(self) -> int:
+        return max(1, int(self._interval or 5))
 
     def _process(self, data: dict) -> dict:
         gcid   = self.gcid or _extract_gcid(data.get("id_token") or data["access_token"])
@@ -282,6 +324,7 @@ def refresh_tokens(store: BMWTokenStore) -> bool:
             },
             timeout=15,
         )
+        store.record_request("token_refresh", resp.status_code, method="POST")
         if resp.status_code == 200:
             data   = resp.json()
             update = {
@@ -329,6 +372,7 @@ def fetch_vehicles(store: BMWTokenStore, force_refresh: bool = False) -> list[di
         "Accept":        "application/json",
     }
     resp = requests.get(VEHICLES_URL, headers=headers, timeout=15)
+    store.record_request("vehicles", resp.status_code, method="GET")
 
     if resp.status_code == 401:
         # Token expired mid-session – try refresh
@@ -339,6 +383,7 @@ def fetch_vehicles(store: BMWTokenStore, force_refresh: bool = False) -> list[di
     if resp.status_code == 403:
         log.warning("Vehicle list primary endpoint denied, trying mappings endpoint")
         fallback = requests.get(VEHICLE_MAPPINGS_URL, headers=headers, timeout=15)
+        store.record_request("vehicle_mappings", fallback.status_code, method="GET")
         if fallback.status_code == 200:
             raw = fallback.json()
             vehicles = _normalize_vehicle_mappings(raw)
