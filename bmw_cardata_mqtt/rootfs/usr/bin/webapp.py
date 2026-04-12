@@ -184,7 +184,7 @@ PAGE = STYLE + """
   <div class="card">
     <h2>🔑 BMW CarData Client-ID</h2>
     <ul class="step-list">
-      <li><span class="step-num sn-blue">1</span><div>Öffne <a href="https://www.bmw-connecteddrive.com/" target="_blank"><strong>bmw-connecteddrive.com</strong></a> und melde dich an.</div></li>
+      <li><span class="step-num sn-blue">1</span><div>Öffne das BMW-Portal und melde dich an.</div></li>
       <li><span class="step-num sn-blue">2</span><div>Navigiere zu <strong>Persönliche Daten → Meine Fahrzeuge → CarData</strong></div></li>
       <li><span class="step-num sn-blue">3</span><div>Klicke <strong>„Client-ID erstellen"</strong> &nbsp;<em>(⚠ NICHT „Fahrzeug authentifizieren"!)</em></div></li>
       <li><span class="step-num sn-blue">4</span><div>Klicke <strong>„Datenauswahl ändern"</strong> und aktiviere alle gewünschten Datenpunkte.</div></li>
@@ -210,9 +210,10 @@ PAGE = STYLE + """
       <li><span class="step-num sn-ok">✓</span><div>Client-ID gespeichert</div></li>
       <li><span class="step-num sn-blue">1</span>
         <div>
-          Öffne den BMW-Login in deinem Browser:<br>
+          Öffne jetzt den BMW-OneID-Login:<br>
           <a href="{{ login_url }}" target="_blank" rel="noopener" class="btn btn-primary btn-sm" style="margin:.45rem 0 .55rem 0">BMW Login öffnen</a><br>
-          <span class="url-chip">{{ verification_uri }}</span>
+          <span class="url-chip">{{ verification_host }}</span>
+          <div class="hint">Falls sich kein Tab öffnet, rufe die Adresse manuell auf und gib anschließend den Code unten ein.</div>
         </div>
       </li>
       <li><span class="step-num sn-blue">2</span>
@@ -436,6 +437,7 @@ def setup_post():
         return render("auth",
                       user_code=info["user_code"],
                       login_url=info["verification_uri_complete"],
+                      verification_host=info["verification_host"],
                       verification_uri=info["verification_uri"],
                       expires_min=info["expires_in"]//60)
     except Exception as exc:

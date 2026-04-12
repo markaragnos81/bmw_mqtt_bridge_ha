@@ -146,16 +146,22 @@ class BMWDeviceFlow:
         if resp.status_code != 200:
             raise BMWAuthError(f"Device code request failed {resp.status_code}: {resp.text}")
         data = resp.json()
+        user_code = data["user_code"]
         self._device_code = data["device_code"]
         self._interval    = int(data.get("interval", 5))
-        verification_uri = _sanitize_verification_uri(data.get("verification_uri"))
+        verification_uri = _sanitize_verification_uri(
+            data.get("verification_uri"),
+            user_code=user_code,
+        )
         verification_uri_complete = _sanitize_verification_uri(
-            data.get("verification_uri_complete")
+            data.get("verification_uri_complete"),
+            user_code=user_code,
         )
         return {
-            "user_code":                 data["user_code"],
+            "user_code":                 user_code,
             "verification_uri":          verification_uri,
             "verification_uri_complete": verification_uri_complete or verification_uri,
+            "verification_host":         _display_verification_host(verification_uri_complete or verification_uri),
             "expires_in":                int(data.get("expires_in", 300)),
         }
 
@@ -205,17 +211,32 @@ def _extract_gcid(jwt: str) -> Optional[str]:
         return None
 
 
-def _sanitize_verification_uri(value: Optional[str]) -> str:
+def _sanitize_verification_uri(value: Optional[str], user_code: Optional[str] = None) -> str:
     if not value or not isinstance(value, str):
-        return BMW_ONEID_URL
+        return _oneid_with_code(user_code)
     text = value.strip()
     if not text:
-        return BMW_ONEID_URL
+        return _oneid_with_code(user_code)
     if text.lower().startswith("<svg"):
-        return BMW_ONEID_URL
+        return _oneid_with_code(user_code)
     if text.startswith("http://") or text.startswith("https://"):
+        if "customer.bmwgroup.com/oneid" in text and user_code and "user_code=" not in text:
+            sep = "&" if "?" in text else "?"
+            return f"{text}{sep}user_code={user_code}"
         return text
+    return _oneid_with_code(user_code)
+
+
+def _oneid_with_code(user_code: Optional[str]) -> str:
+    if user_code:
+        return f"{BMW_ONEID_URL}?user_code={user_code}"
     return BMW_ONEID_URL
+
+
+def _display_verification_host(value: str) -> str:
+    if "customer.bmwgroup.com/oneid" in value:
+        return "customer.bmwgroup.com/oneid"
+    return value
 
 
 def _generate_code_verifier(length: int = 96) -> str:
