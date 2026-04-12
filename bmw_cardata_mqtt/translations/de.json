@@ -5,6 +5,7 @@
     "mqtt_user":     { "name": "MQTT Benutzer", "description": "Benutzername (leer lassen wenn keine Auth nötig)" },
     "mqtt_password": { "name": "MQTT Passwort", "description": "Passwort (leer lassen wenn keine Auth nötig)" },
     "bmw_prefix":    { "name": "Topic-Präfix",  "description": "MQTT-Präfix für alle BMW-Topics, z.B. bmw/ oder auto/bmw/" },
+    "stream_mode":   { "name": "Stream-Modus",  "description": "always_on = Bridge startet automatisch; conservative = nur manuell über das Dashboard starten" },
     "log_level":     { "name": "Log-Level",     "description": "debug | info | warning | error" }
   }
 }

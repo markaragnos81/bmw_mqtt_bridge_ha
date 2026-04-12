@@ -40,8 +40,11 @@ OVERRIDE_FILE = "/data/bmw_setup.json"  # Client-ID + selected VINs
 def load_options() -> dict:
     if os.path.exists(OPTIONS_FILE):
         with open(OPTIONS_FILE) as f:
-            return json.load(f)
-    return {}
+            data = json.load(f)
+            if "stream_mode" not in data:
+                data["stream_mode"] = "always_on"
+            return data
+    return {"stream_mode": "always_on"}
 
 
 def load_override() -> dict:
@@ -56,6 +59,14 @@ def save_override(data: dict):
     cur.update(data)
     with open(OVERRIDE_FILE, "w") as f:
         json.dump(cur, f, indent=2)
+
+
+def stream_mode() -> str:
+    return load_options().get("stream_mode", "always_on")
+
+
+def should_auto_start() -> bool:
+    return stream_mode() == "always_on"
 
 
 def push_sse(event: str, data: dict):
@@ -288,6 +299,9 @@ PAGE = STYLE + """
       <div class="stat"><div class="stat-val" style="font-size:.9rem" id="token-exp">{{ token_exp }}</div><div class="stat-lbl">Token gültig bis</div></div>
       <div class="stat"><div class="stat-val">{{ vehicles|length }}</div><div class="stat-lbl">Fahrzeug{{ 'e' if vehicles|length != 1 else '' }}</div></div>
     </div>
+    <div id="rate-limit" style="font-size:.8rem;color:#6b7280;margin-top:.6rem">Nächster Retry: {{ next_retry_at or '–' }}</div>
+    <div id="last-connect" style="font-size:.8rem;color:#6b7280">Letzte BMW-Verbindung: {{ last_connected_at or '–' }}</div>
+    <div id="last-quota" style="font-size:.8rem;color:#6b7280">Letztes Rate-Limit: {{ last_quota_at or '–' }}{% if quota_error_count %} ({{ quota_error_count }}x){% endif %}</div>
     <div id="last-msg" style="font-size:.78rem;color:#9ca3af">Letzte Nachricht: {{ last_msg or '–' }}</div>
   </div>
 
@@ -310,7 +324,18 @@ PAGE = STYLE + """
   <div class="card">
     <h2>⚙️ Verwaltung</h2>
     <div style="display:flex;gap:.6rem;flex-wrap:wrap">
+      {% if stream_mode == 'conservative' %}
+      <form method="post" action="{{ B }}/start_bridge" style="display:inline">
+        <button type="submit" class="btn btn-primary btn-sm">▶ Bridge starten</button>
+      </form>
+      <form method="post" action="{{ B }}/stop_bridge" style="display:inline">
+        <button type="submit" class="btn btn-ghost btn-sm">■ Bridge stoppen</button>
+      </form>
+      {% endif %}
       <a href="{{ B }}/pick_again" class="btn btn-ghost btn-sm">🚗 Fahrzeugauswahl ändern</a>
+      <form method="post" action="{{ B }}/reload_vehicles" style="display:inline">
+        <button type="submit" class="btn btn-ghost btn-sm">↻ Fahrzeuge neu laden</button>
+      </form>
       <form method="post" action="{{ B }}/reset" style="display:inline" onsubmit="return confirm('Wirklich alle Tokens löschen und neu einrichten?')">
         <button type="submit" class="btn btn-danger btn-sm">🔄 Neu einrichten</button>
       </form>
@@ -330,6 +355,9 @@ PAGE = STYLE + """
         document.getElementById("msg-count").textContent = d.message_count;
         document.getElementById("last-msg").textContent  = "Letzte Nachricht: " + (d.last_message||"–");
         document.getElementById("token-exp").textContent = d.token_exp;
+        document.getElementById("rate-limit").textContent = "Nächster Retry: " + (d.next_retry_at||"–");
+        document.getElementById("last-connect").textContent = "Letzte BMW-Verbindung: " + (d.last_connected_at||"–");
+        document.getElementById("last-quota").textContent = "Letztes Rate-Limit: " + (d.last_quota_at||"–") + (d.quota_error_count ? " (" + d.quota_error_count + "x)" : "");
       });
     }, 10000);
   </script>
@@ -384,7 +412,8 @@ def index():
     if store.has_tokens:
         ov = load_override()
         if ov.get("selected_vins"):
-            _maybe_start_bridge()
+            if should_auto_start():
+                _maybe_start_bridge()
             return _dashboard()
         return redirect(B() + "/pick")
     # First time: MQTT check
@@ -402,6 +431,8 @@ def _dashboard():
     b           = bridge
     exp_ts      = store.expires_at
     exp_str     = datetime.fromtimestamp(exp_ts, tz=timezone.utc).strftime("%d.%m %H:%M UTC") if exp_ts else "?"
+    next_retry  = store.next_retry_at
+    next_retry_str = datetime.fromtimestamp(next_retry, tz=timezone.utc).strftime("%d.%m %H:%M UTC") if next_retry else None
     sel_vins    = ov.get("selected_vins", [])
     vehicles    = [v for v in (ov.get("vehicles") or []) if v["vin"] in sel_vins]
     return render("dashboard",
@@ -409,6 +440,11 @@ def _dashboard():
                   msg_count=b.message_count if b else 0,
                   last_msg=b.last_message if b else None,
                   token_exp=exp_str,
+                  next_retry_at=next_retry_str,
+                  last_connected_at=store.last_connected_at,
+                  last_quota_at=store.last_quota_at,
+                  quota_error_count=store.quota_error_count,
+                  stream_mode=stream_mode(),
                   vehicles=vehicles,
                   sensor_count=len(BMWMQTTBridge.SENSORS))
 
@@ -463,11 +499,15 @@ def _poll_loop(flow: BMWDeviceFlow):
 def pick_get():
     if not store.has_tokens:
         return redirect(B() + "/setup")
+    ov = load_override()
+    force_refresh = request.args.get("refresh") == "1"
+    if ov.get("vehicles") and not force_refresh:
+        preselected = ov.get("selected_vins", [v["vin"] for v in ov.get("vehicles", [])])
+        return render("pick", vehicles=ov.get("vehicles", []), preselected=preselected, info="Fahrzeugliste aus lokalem Cache geladen.")
     try:
-        vehicles = fetch_vehicles(store)
+        vehicles = fetch_vehicles(store, force_refresh=force_refresh)
     except BMWAuthError as exc:
         return render("setup", error=f"Fahrzeugliste fehlgeschlagen: {exc}")
-    ov = load_override()
     save_override({"vehicles": vehicles})
     preselected = ov.get("selected_vins", [v["vin"] for v in vehicles])
     return render("pick", vehicles=vehicles, preselected=preselected)
@@ -480,13 +520,41 @@ def pick_post():
         return render("pick", vehicles=load_override().get("vehicles",[]),
                       preselected=[], error="Bitte mindestens ein Fahrzeug auswählen.")
     save_override({"selected_vins": vins})
-    _maybe_start_bridge()
+    if should_auto_start():
+        _maybe_start_bridge()
     return redirect(B() + "/")
 
 
 @app.route("/pick_again")
 def pick_again():
     return redirect(B() + "/pick")
+
+
+@app.route("/reload_vehicles", methods=["POST"])
+def reload_vehicles():
+    if not store.has_tokens:
+        return redirect(B() + "/setup")
+    try:
+        vehicles = fetch_vehicles(store, force_refresh=True)
+    except BMWAuthError as exc:
+        return render("setup", error=f"Fahrzeugliste fehlgeschlagen: {exc}")
+    save_override({"vehicles": vehicles})
+    return redirect(B() + "/pick")
+
+
+@app.route("/start_bridge", methods=["POST"])
+def start_bridge():
+    _maybe_start_bridge(force=True)
+    return redirect(B() + "/")
+
+
+@app.route("/stop_bridge", methods=["POST"])
+def stop_bridge():
+    global bridge
+    if bridge:
+        bridge.stop()
+        bridge = None
+    return redirect(B() + "/")
 
 
 # ── SSE endpoints ─────────────────────────────────────────────────────────────
@@ -519,11 +587,17 @@ def status_json():
     b      = bridge
     exp_ts = store.expires_at
     exp_str = datetime.fromtimestamp(exp_ts, tz=timezone.utc).strftime("%d.%m %H:%M UTC") if exp_ts else "?"
+    retry_ts = store.next_retry_at
+    retry_str = datetime.fromtimestamp(retry_ts, tz=timezone.utc).strftime("%d.%m %H:%M UTC") if retry_ts else None
     return jsonify({
         "status":        b.status if b else "stopped",
         "message_count": b.message_count if b else 0,
         "last_message":  b.last_message if b else None,
         "token_exp":     exp_str,
+        "next_retry_at": retry_str,
+        "last_connected_at": store.last_connected_at,
+        "last_quota_at": store.last_quota_at,
+        "quota_error_count": store.quota_error_count,
     })
 
 
@@ -542,7 +616,7 @@ def reset():
 
 # ── Bridge control ────────────────────────────────────────────────────────────
 
-def _maybe_start_bridge():
+def _maybe_start_bridge(force: bool = False):
     global bridge
     opts  = load_options()
     ov    = load_override()
@@ -553,6 +627,9 @@ def _maybe_start_bridge():
         store.save({"gcid": ov["gcid"]})
 
     if not sel_vehicles or not store.has_tokens:
+        return
+
+    if not force and not should_auto_start():
         return
 
     if bridge:
@@ -578,7 +655,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s [%(levelname)s] %(name)s – %(message)s")
     # Auto-start bridge if fully configured
-    if store.has_tokens and load_override().get("selected_vins"):
+    if should_auto_start() and store.has_tokens and load_override().get("selected_vins"):
         log.info("Auto-starting bridge from saved config …")
         _maybe_start_bridge()
     app.run(host="0.0.0.0", port=8099, threaded=True)

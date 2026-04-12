@@ -72,6 +72,9 @@ class BMWTokenStore:
     def get(self) -> dict:
         return self._data
 
+    def set(self, **values):
+        self.save(values)
+
     def clear(self):
         self._data = {}
         for p in (self.path, VEHICLE_FILE):
@@ -116,6 +119,22 @@ class BMWTokenStore:
     def set_selected_vins(self, vins: list[str]):
         self._data["selected_vins"] = vins
         self.save({})
+
+    @property
+    def next_retry_at(self) -> float:
+        return float(self._data.get("next_retry_at", 0) or 0)
+
+    @property
+    def last_connected_at(self) -> Optional[str]:
+        return self._data.get("last_connected_at")
+
+    @property
+    def last_quota_at(self) -> Optional[str]:
+        return self._data.get("last_quota_at")
+
+    @property
+    def quota_error_count(self) -> int:
+        return int(self._data.get("quota_error_count", 0) or 0)
 
 
 # ── OAuth2 Device Flow ────────────────────────────────────────────────────────
@@ -284,14 +303,14 @@ def refresh_tokens(store: BMWTokenStore) -> bool:
 
 # ── Vehicle list API ──────────────────────────────────────────────────────────
 
-def fetch_vehicles(store: BMWTokenStore) -> list[dict]:
+def fetch_vehicles(store: BMWTokenStore, force_refresh: bool = False) -> list[dict]:
     """
     GET https://api-cardata.bmwgroup.com/customers/vehicles
     Returns list of {vin, model, brand, year, ...}
     Result is cached to VEHICLE_FILE.
     """
     # Try cache first (valid 24 h)
-    if os.path.exists(VEHICLE_FILE):
+    if not force_refresh and os.path.exists(VEHICLE_FILE):
         try:
             with open(VEHICLE_FILE) as f:
                 cached = json.load(f)
@@ -471,7 +490,7 @@ class BMWMQTTBridge:
         self._running     = False
         self._thread:     Optional[threading.Thread] = None
         self._offline_timer: Optional[threading.Timer] = None
-        self._next_retry_at = 0.0
+        self._next_retry_at = self.store.next_retry_at
 
         self.status        = "stopped"
         self.last_message  = None
@@ -509,6 +528,7 @@ class BMWMQTTBridge:
     def _run_loop(self):
         while self._running:
             try:
+                self._sleep_until_retry_window()
                 if self.store.is_expired:
                     log.info("Token expired, refreshing …")
                     if not refresh_tokens(self.store):
@@ -584,6 +604,10 @@ class BMWMQTTBridge:
             return
         self._cancel_offline_timer()
         self._clear_retry_backoff()
+        self.store.set(
+            last_connected_at=datetime.now(timezone.utc).isoformat(),
+            quota_error_count=0,
+        )
         # Subscribe for all selected vehicles
         for v in self.vehicles:
             topic = f"{self.store.gcid}/{v['vin']}/#"
@@ -732,6 +756,10 @@ class BMWMQTTBridge:
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "last_message": self.last_message,
             "message_count": self.message_count,
+            "next_retry_at": self.store.get().get("next_retry_at"),
+            "last_connected_at": self.store.last_connected_at,
+            "last_quota_at": self.store.last_quota_at,
+            "quota_error_count": self.store.quota_error_count,
         }
         if self.store.expires_at:
             payload["token_expires_at"] = datetime.fromtimestamp(
@@ -772,18 +800,33 @@ class BMWMQTTBridge:
     def _set_retry_backoff(self, reason: str):
         delay = 30
         if "Quota exceeded" in reason:
-            delay = 15 * 60
+            quota_count = self.store.quota_error_count + 1
+            delay = min(15 * 60 * (2 ** max(0, quota_count - 1)), 2 * 60 * 60)
+            self.store.set(
+                last_quota_at=datetime.now(timezone.utc).isoformat(),
+                quota_error_count=quota_count,
+            )
         elif "Server busy" in reason:
             delay = 2 * 60
         self._next_retry_at = time.time() + delay
+        self.store.set(next_retry_at=self._next_retry_at)
 
     def _clear_retry_backoff(self):
         self._next_retry_at = 0.0
+        self.store.set(next_retry_at=0)
 
     def _retry_wait_seconds(self) -> int:
         if self._next_retry_at <= 0:
             return 30
         return max(1, int(self._next_retry_at - time.time()))
+
+    def _sleep_until_retry_window(self):
+        wait_s = self._retry_wait_seconds()
+        if self._next_retry_at > 0 and wait_s > 1:
+            self._set_status("rate_limited")
+            self._publish_status("offline", connected=False, reason="rate_limited")
+            log.info("Waiting %d s before next BMW reconnect attempt", wait_s)
+            time.sleep(wait_s)
 
     def _disconnect_clients(self):
         for client in (self._bmw_client, self._local_client):
