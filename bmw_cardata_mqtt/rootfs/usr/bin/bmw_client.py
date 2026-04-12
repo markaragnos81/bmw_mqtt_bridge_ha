@@ -491,6 +491,7 @@ class BMWMQTTBridge:
         self._thread:     Optional[threading.Thread] = None
         self._offline_timer: Optional[threading.Timer] = None
         self._next_retry_at = self.store.next_retry_at
+        self._disconnect_expected = False
 
         self.status        = "stopped"
         self.last_message  = None
@@ -538,7 +539,7 @@ class BMWMQTTBridge:
 
                 self._connect_local()
                 self._connect_bmw()
-                self._bmw_client.loop_forever(retry_first_connection=True)
+                self._bmw_client.loop_forever(retry_first_connection=False)
 
             except Exception as exc:
                 log.error("Bridge loop: %s", exc)
@@ -601,6 +602,11 @@ class BMWMQTTBridge:
             self._set_status("bmw_connect_error")
             self._set_retry_backoff(reason)
             self._publish_status("offline", connected=False, reason=f"connect_failed:{reason}")
+            self._disconnect_expected = True
+            try:
+                client.disconnect()
+            except Exception:
+                pass
             return
         self._cancel_offline_timer()
         self._clear_retry_backoff()
@@ -619,6 +625,10 @@ class BMWMQTTBridge:
     def _bmw_on_disconnect(self, client, userdata, flags, rc, props=None):
         reason = self._reason_text(rc)
         log.warning("BMW MQTT disconnected: %s", reason)
+        if self._disconnect_expected or not self._running:
+            self._disconnect_expected = False
+            self._schedule_offline_status(reason)
+            return
         self._set_status("reconnecting")
         self._set_retry_backoff(reason)
         self._schedule_offline_status(reason)
@@ -829,6 +839,7 @@ class BMWMQTTBridge:
             time.sleep(wait_s)
 
     def _disconnect_clients(self):
+        self._disconnect_expected = True
         for client in (self._bmw_client, self._local_client):
             if not client:
                 continue
