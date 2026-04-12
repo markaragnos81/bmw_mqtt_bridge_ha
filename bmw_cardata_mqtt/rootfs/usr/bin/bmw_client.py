@@ -35,6 +35,7 @@ BMW_OAUTH_SCOPE  = "authenticate_user openid cardata:api:read cardata:streaming:
 
 BMW_MQTT_HOST    = "customer.streaming-cardata.bmwgroup.com"
 BMW_MQTT_PORT    = 9000
+BMW_ONEID_URL    = "https://customer.bmwgroup.com/oneid/"
 
 TOKEN_FILE       = "/data/bmw_tokens.json"
 VEHICLE_FILE     = "/data/bmw_vehicles.json"   # cached vehicle list
@@ -206,15 +207,15 @@ def _extract_gcid(jwt: str) -> Optional[str]:
 
 def _sanitize_verification_uri(value: Optional[str]) -> str:
     if not value or not isinstance(value, str):
-        return "https://www.bmw-connecteddrive.com/"
+        return BMW_ONEID_URL
     text = value.strip()
     if not text:
-        return "https://www.bmw-connecteddrive.com/"
+        return BMW_ONEID_URL
     if text.lower().startswith("<svg"):
-        return "https://www.bmw-connecteddrive.com/"
+        return BMW_ONEID_URL
     if text.startswith("http://") or text.startswith("https://"):
         return text
-    return "https://www.bmw-connecteddrive.com/"
+    return BMW_ONEID_URL
 
 
 def _generate_code_verifier(length: int = 96) -> str:
