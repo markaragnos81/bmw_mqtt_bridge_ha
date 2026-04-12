@@ -172,7 +172,7 @@ def _block_reason_state() -> dict:
     quota_blocked = bool(retry_state["retry_hint"])
     reasons = []
     if not window_open:
-        reasons.append("Zeitfenster geschlossen")
+        reasons.append("Auto-Start pausiert")
     if quota_blocked:
         reasons.append("BMW Rate-Limit aktiv")
     blocked = bool(reasons)
@@ -181,12 +181,12 @@ def _block_reason_state() -> dict:
     if blocked:
         detail_parts = []
         if not window_open and active_window():
-            detail_parts.append(f"Zeitfenster: {active_window()}")
+            detail_parts.append(f"Auto-Start-Fenster: {active_window()}")
             if next_window_start():
                 detail_parts.append(f"nächstes Fenster ab {next_window_start()}")
         if quota_blocked:
             detail_parts.append(retry_state["retry_hint"])
-        block_hint = "Blockiert: " + " · ".join(detail_parts)
+        block_hint = "Hinweis: " + " · ".join(detail_parts)
     return {
         "blocked": blocked,
         "block_reason": block_reason,
@@ -771,8 +771,6 @@ def pick_again():
 def reload_vehicles():
     if not store.has_tokens:
         return redirect(B() + "/setup")
-    if not within_active_window():
-        return render("dashboard", error="Fahrzeuge neu laden ist außerhalb des Zeitfensters blockiert.", **_dashboard_context())
     try:
         vehicles = fetch_vehicles(store, force_refresh=True)
     except BMWAuthError as exc:
@@ -783,8 +781,6 @@ def reload_vehicles():
 
 @app.route("/start_bridge", methods=["POST"])
 def start_bridge():
-    if not within_active_window():
-        return render("dashboard", error="Bridge-Start ist außerhalb des konfigurierten Zeitfensters blockiert.", **_dashboard_context())
     _maybe_start_bridge(force=True)
     return redirect(B() + "/")
 
@@ -937,7 +933,7 @@ def _maybe_start_bridge(force: bool = False):
     if not sel_vehicles or not store.has_tokens:
         return
 
-    if not within_active_window():
+    if not force and not within_active_window():
         log.info("BMW bridge start skipped: outside configured active window")
         return
 
