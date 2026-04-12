@@ -41,6 +41,7 @@ TOKEN_FILE       = "/data/bmw_tokens.json"
 VEHICLE_FILE     = "/data/bmw_vehicles.json"   # cached vehicle list
 REFRESH_MARGIN_S = 300                          # refresh 5 min before expiry
 STATUS_STABLE_DELAY_S = 5
+STREAM_MIN_CONNECT_INTERVAL_S = 60
 
 
 class BMWAuthError(Exception):
@@ -135,6 +136,10 @@ class BMWTokenStore:
     @property
     def quota_error_count(self) -> int:
         return int(self._data.get("quota_error_count", 0) or 0)
+
+    @property
+    def last_stream_connect_attempt_at(self) -> float:
+        return float(self._data.get("last_stream_connect_attempt_at", 0) or 0)
 
     @property
     def request_events(self) -> list[dict]:
@@ -582,6 +587,7 @@ class BMWMQTTBridge:
                         time.sleep(60)
                         continue
 
+                self._sleep_until_stream_connect_allowed()
                 self._connect_local()
                 self._connect_bmw()
                 self._bmw_client.loop_forever(retry_first_connection=False)
@@ -636,6 +642,7 @@ class BMWMQTTBridge:
         c.on_connect    = self._bmw_on_connect
         c.on_message    = self._bmw_on_message
         c.on_disconnect = self._bmw_on_disconnect
+        self.store.set(last_stream_connect_attempt_at=time.time())
         c.connect(BMW_MQTT_HOST, BMW_MQTT_PORT, keepalive=60)
         self._bmw_client = c
         log.info("BMW MQTT connecting as %s …", gcid)
@@ -881,6 +888,24 @@ class BMWMQTTBridge:
             self._set_status("rate_limited")
             self._publish_status("offline", connected=False, reason="rate_limited")
             log.info("Waiting %d s before next BMW reconnect attempt", wait_s)
+            time.sleep(wait_s)
+
+    def _sleep_until_stream_connect_allowed(self):
+        last_attempt = self.store.last_stream_connect_attempt_at
+        if last_attempt <= 0:
+            return
+        wait_s = max(0, int(last_attempt + STREAM_MIN_CONNECT_INTERVAL_S - time.time()))
+        if wait_s > 0:
+            self._set_status("stream_policy_wait")
+            self._publish_status(
+                "offline",
+                connected=False,
+                reason=f"stream_connect_policy_wait:{wait_s}s",
+            )
+            log.info(
+                "Waiting %d s to respect BMW stream connection rate policy",
+                wait_s,
+            )
             time.sleep(wait_s)
 
     def _disconnect_clients(self):

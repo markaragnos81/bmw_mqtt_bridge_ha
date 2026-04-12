@@ -5,7 +5,7 @@ LABEL \
   io.hass.name="BMW CarData MQTT Bridge" \
   io.hass.description="BMW CarData → HA MQTT Discovery mit OAuth2 Setup-Wizard und auto. Fahrzeugerkennung" \
   io.hass.type="addon" \
-  io.hass.version="3.2.3"
+  io.hass.version="3.2.4"
 
 RUN apk add --no-cache \
     ca-certificates \
