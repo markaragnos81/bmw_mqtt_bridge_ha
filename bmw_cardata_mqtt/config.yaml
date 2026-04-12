@@ -1,6 +1,6 @@
 name: "BMW CarData MQTT Bridge"
 description: "BMW CarData → Home Assistant MQTT Discovery. OAuth2-Setup, automatische Fahrzeugerkennung und Token-Refresh direkt im Addon."
-version: "3.1.3"
+version: "3.1.4"
 slug: "bmw_cardata_mqtt"
 init: false
 

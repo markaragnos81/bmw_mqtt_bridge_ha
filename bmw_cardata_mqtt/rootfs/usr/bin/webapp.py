@@ -120,6 +120,31 @@ def next_window_start(now_ts: Optional[float] = None) -> Optional[str]:
     return datetime.fromtimestamp(target).strftime("%d.%m %H:%M")
 
 
+def _format_countdown(target_ts: Optional[float]) -> Optional[str]:
+    if not target_ts or target_ts <= time.time():
+        return None
+    seconds = max(1, int(target_ts - time.time()))
+    minutes, _seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"noch {hours}h {minutes:02d}m"
+    return f"noch {minutes} min"
+
+
+def _retry_ui_state() -> dict:
+    retry_ts = store.next_retry_at
+    retry_str = datetime.fromtimestamp(retry_ts, tz=timezone.utc).strftime("%d.%m %H:%M UTC") if retry_ts else None
+    retry_countdown = _format_countdown(retry_ts)
+    retry_hint = None
+    if retry_str and retry_countdown:
+        retry_hint = f"Rate-Limit aktiv bis {retry_str} ({retry_countdown})"
+    return {
+        "next_retry_at": retry_str,
+        "retry_countdown": retry_countdown,
+        "retry_hint": retry_hint,
+    }
+
+
 def should_auto_start() -> bool:
     return stream_mode() == "always_on" and within_active_window()
 
@@ -211,7 +236,13 @@ BMW_LOGO = """
 PAGE = STYLE + """
 <header>
   <div style="display:flex;align-items:center;flex-shrink:0">{{ logo|safe }}</div>
-  <div><h1>BMW CarData Bridge</h1><small>Home Assistant Addon v3</small></div>
+  <div>
+    <h1>BMW CarData Bridge</h1>
+    <small>Home Assistant Addon v3</small>
+    {% if phase == 'dashboard' and retry_hint %}
+    <small id="hdr-retry" style="display:block;color:#fde68a;opacity:1;margin-top:.2rem">{{ retry_hint }}</small>
+    {% endif %}
+  </div>
   {% if phase == 'dashboard' %}
   <span style="margin-left:auto" id="hdr-badge" class="badge {{ 'b-ok' if status=='connected' else 'b-warn' }}">{{ status }}</span>
   {% endif %}
@@ -349,13 +380,16 @@ PAGE = STYLE + """
   {% elif phase == 'dashboard' %}
   <div class="card">
     <h2>📊 Verbindungsstatus</h2>
+    {% if retry_hint %}
+    <div id="retry-banner" class="alert a-info" style="margin-bottom:.8rem">⏳ {{ retry_hint }}</div>
+    {% endif %}
     <div class="stat-row">
       <div class="stat"><div class="stat-val" id="msg-count">{{ msg_count }}</div><div class="stat-lbl">Nachrichten</div></div>
       <div class="stat"><div class="stat-val" style="font-size:.9rem" id="token-exp">{{ token_exp }}</div><div class="stat-lbl">Token gültig bis</div></div>
       <div class="stat"><div class="stat-val">{{ vehicles|length }}</div><div class="stat-lbl">Fahrzeug{{ 'e' if vehicles|length != 1 else '' }}</div></div>
     </div>
     <div id="window-state" style="font-size:.8rem;color:#6b7280;margin-top:.6rem">Zeitfenster: {{ active_window or 'immer aktiv' }}{% if not window_open %} · Nächstes Fenster: {{ next_window_start or '–' }}{% endif %}</div>
-    <div id="rate-limit" style="font-size:.8rem;color:#6b7280;margin-top:.6rem">Nächster Retry: {{ next_retry_at or '–' }}</div>
+    <div id="rate-limit" style="font-size:.8rem;color:#6b7280;margin-top:.6rem">Nächster Retry: {{ next_retry_at or '–' }}{% if retry_countdown %} · {{ retry_countdown }}{% endif %}</div>
     <div id="last-connect" style="font-size:.8rem;color:#6b7280">Letzte BMW-Verbindung: {{ last_connected_at or '–' }}</div>
     <div id="last-quota" style="font-size:.8rem;color:#6b7280">Letztes Rate-Limit: {{ last_quota_at or '–' }}{% if quota_error_count %} ({{ quota_error_count }}x){% endif %}</div>
     <div id="last-msg" style="font-size:.78rem;color:#9ca3af">Letzte Nachricht: {{ last_msg or '–' }}</div>
@@ -412,9 +446,13 @@ PAGE = STYLE + """
         document.getElementById("last-msg").textContent  = "Letzte Nachricht: " + (d.last_message||"–");
         document.getElementById("token-exp").textContent = d.token_exp;
         document.getElementById("window-state").textContent = "Zeitfenster: " + (d.active_window || "immer aktiv") + (!d.window_open ? " · Nächstes Fenster: " + (d.next_window_start || "–") : "");
-        document.getElementById("rate-limit").textContent = "Nächster Retry: " + (d.next_retry_at||"–");
+        document.getElementById("rate-limit").textContent = "Nächster Retry: " + (d.next_retry_at||"–") + (d.retry_countdown ? " · " + d.retry_countdown : "");
         document.getElementById("last-connect").textContent = "Letzte BMW-Verbindung: " + (d.last_connected_at||"–");
         document.getElementById("last-quota").textContent = "Letztes Rate-Limit: " + (d.last_quota_at||"–") + (d.quota_error_count ? " (" + d.quota_error_count + "x)" : "");
+        const hdrRetry = document.getElementById("hdr-retry");
+        if(hdrRetry){ hdrRetry.textContent = d.retry_hint || ""; hdrRetry.style.display = d.retry_hint ? "block" : "none"; }
+        const retryBanner = document.getElementById("retry-banner");
+        if(retryBanner){ retryBanner.textContent = d.retry_hint ? "⏳ " + d.retry_hint : ""; retryBanner.style.display = d.retry_hint ? "block" : "none"; }
       });
     }, 10000);
   </script>
@@ -628,8 +666,7 @@ def status_json():
     b      = bridge
     exp_ts = store.expires_at
     exp_str = datetime.fromtimestamp(exp_ts, tz=timezone.utc).strftime("%d.%m %H:%M UTC") if exp_ts else "?"
-    retry_ts = store.next_retry_at
-    retry_str = datetime.fromtimestamp(retry_ts, tz=timezone.utc).strftime("%d.%m %H:%M UTC") if retry_ts else None
+    retry_state = _retry_ui_state()
     return jsonify({
         "status":        b.status if b else "stopped",
         "message_count": b.message_count if b else 0,
@@ -638,7 +675,9 @@ def status_json():
         "active_window": active_window(),
         "window_open": within_active_window(),
         "next_window_start": next_window_start(),
-        "next_retry_at": retry_str,
+        "next_retry_at": retry_state["next_retry_at"],
+        "retry_countdown": retry_state["retry_countdown"],
+        "retry_hint": retry_state["retry_hint"],
         "last_connected_at": store.last_connected_at,
         "last_quota_at": store.last_quota_at,
         "quota_error_count": store.quota_error_count,
@@ -664,8 +703,7 @@ def _dashboard_context() -> dict:
     ov = load_override()
     exp_ts = store.expires_at
     exp_str = datetime.fromtimestamp(exp_ts, tz=timezone.utc).strftime("%d.%m %H:%M UTC") if exp_ts else "?"
-    retry_ts = store.next_retry_at
-    retry_str = datetime.fromtimestamp(retry_ts, tz=timezone.utc).strftime("%d.%m %H:%M UTC") if retry_ts else None
+    retry_state = _retry_ui_state()
     sel_vins = ov.get("selected_vins", [])
     vehicles = [v for v in (ov.get("vehicles") or []) if v["vin"] in sel_vins]
     return {
@@ -676,7 +714,9 @@ def _dashboard_context() -> dict:
         "active_window": active_window(),
         "window_open": within_active_window(),
         "next_window_start": next_window_start(),
-        "next_retry_at": retry_str,
+        "next_retry_at": retry_state["next_retry_at"],
+        "retry_countdown": retry_state["retry_countdown"],
+        "retry_hint": retry_state["retry_hint"],
         "last_connected_at": store.last_connected_at,
         "last_quota_at": store.last_quota_at,
         "quota_error_count": store.quota_error_count,
