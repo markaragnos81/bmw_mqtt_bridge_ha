@@ -30,7 +30,8 @@ BMW_AUTH_BASE    = "https://customer.bmwgroup.com"
 DEVICE_CODE_URL  = f"{BMW_AUTH_BASE}/gcdm/oauth/device/code"
 TOKEN_URL        = f"{BMW_AUTH_BASE}/gcdm/oauth/token"
 VEHICLES_URL     = "https://api-cardata.bmwgroup.com/customers/vehicles"
-BMW_OAUTH_SCOPE  = "authenticate_user openid cardata:streaming:read"
+VEHICLE_MAPPINGS_URL = "https://api-cardata.bmwgroup.com/customers/vehicles/mappings"
+BMW_OAUTH_SCOPE  = "authenticate_user openid cardata:api:read cardata:streaming:read"
 
 BMW_MQTT_HOST    = "customer.streaming-cardata.bmwgroup.com"
 BMW_MQTT_PORT    = 9000
@@ -281,21 +282,35 @@ def fetch_vehicles(store: BMWTokenStore) -> list[dict]:
     if not store.access_token:
         raise BMWAuthError("No access token available")
 
-    resp = requests.get(
-        VEHICLES_URL,
-        headers={
-            "Authorization": f"Bearer {store.access_token}",
-            "x-version":     "v1",
-            "Accept":        "application/json",
-        },
-        timeout=15,
-    )
+    headers = {
+        "Authorization": f"Bearer {store.access_token}",
+        "x-version":     "v1",
+        "Accept":        "application/json",
+    }
+    resp = requests.get(VEHICLES_URL, headers=headers, timeout=15)
 
     if resp.status_code == 401:
         # Token expired mid-session – try refresh
         if refresh_tokens(store):
             return fetch_vehicles(store)
         raise BMWAuthError("Unauthorized – token refresh failed")
+
+    if resp.status_code == 403:
+        log.warning("Vehicle list primary endpoint denied, trying mappings endpoint")
+        fallback = requests.get(VEHICLE_MAPPINGS_URL, headers=headers, timeout=15)
+        if fallback.status_code == 200:
+            raw = fallback.json()
+            vehicles = _normalize_vehicle_mappings(raw)
+            if vehicles:
+                with open(VEHICLE_FILE, "w") as f:
+                    json.dump({"_ts": time.time(), "vehicles": vehicles}, f, indent=2)
+                log.info("Fetched %d vehicle(s) from BMW mappings API", len(vehicles))
+                return vehicles
+        raise BMWAuthError(
+            "Vehicle list access forbidden. Your BMW CarData client likely needs "
+            "'cardata:api:read' in addition to 'cardata:streaming:read'. "
+            f"Primary endpoint: {resp.status_code}; fallback: {fallback.status_code}."
+        )
 
     if resp.status_code != 200:
         raise BMWAuthError(f"Vehicle list failed {resp.status_code}: {resp.text}")
@@ -337,6 +352,44 @@ def _normalize_vehicles(raw) -> list[dict]:
             "brand": v.get("brand", "BMW"),
             "year":  v.get("modelYear") or v.get("year", ""),
             "color": v.get("color", ""),
+        })
+    return result
+
+
+def _normalize_vehicle_mappings(raw) -> list[dict]:
+    if isinstance(raw, list):
+        items = raw
+    elif isinstance(raw, dict):
+        items = raw.get("vehicles") or raw.get("data") or raw.get("mappings") or [raw]
+    else:
+        return []
+
+    result = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        vin = (
+            item.get("vin")
+            or item.get("vehicleVin")
+            or item.get("customerVehicleId")
+            or item.get("vehicleId")
+            or item.get("id", "")
+        )
+        if not vin or len(vin) != 17:
+            continue
+        model = (
+            item.get("modelName")
+            or item.get("model")
+            or item.get("brandModel")
+            or item.get("name")
+            or "BMW"
+        )
+        result.append({
+            "vin": vin,
+            "model": model,
+            "brand": item.get("brand", "BMW"),
+            "year": item.get("modelYear") or item.get("year", ""),
+            "color": item.get("color", ""),
         })
     return result
 
