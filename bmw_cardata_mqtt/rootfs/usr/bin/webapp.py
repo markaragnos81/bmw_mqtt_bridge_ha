@@ -210,7 +210,7 @@ BMW_LOGO = """
 
 PAGE = STYLE + """
 <header>
-  {{ logo }}
+  <div style="display:flex;align-items:center;flex-shrink:0">{{ logo|safe }}</div>
   <div><h1>BMW CarData Bridge</h1><small>Home Assistant Addon v3</small></div>
   {% if phase == 'dashboard' %}
   <span style="margin-left:auto" id="hdr-badge" class="badge {{ 'b-ok' if status=='connected' else 'b-warn' }}">{{ status }}</span>
