@@ -207,11 +207,17 @@ def _request_telemetry() -> dict:
     quota_limit_24h = 50
     quota_used_24h = len(last_24h)
     quota_remaining_24h = max(0, quota_limit_24h - quota_used_24h)
-    quota_hint = (
-        f"HTTP-Quota lokal: {quota_used_24h}/{quota_limit_24h} genutzt, ca. {quota_remaining_24h} übrig"
-    )
+    mqtt_rate_limited = store.next_retry_at > now and store.quota_error_count > 0
+    if quota_used_24h > 0:
+        quota_hint = (
+            f"HTTP-Quota lokal: {quota_used_24h}/{quota_limit_24h} genutzt, ca. {quota_remaining_24h} übrig"
+        )
+    else:
+        quota_hint = "HTTP-Quota lokal: noch keine belastbaren Add-on-Daten im 24h-Fenster"
+    if mqtt_rate_limited:
+        quota_hint += " · BMW-MQTT-Limit aktuell separat aktiv"
     quota_note = (
-        "Nur Add-on-lokale HTTP-Requests; BMW-MQTT-Stream und andere Clients sind darin nicht enthalten."
+        "Nur Add-on-lokale HTTP-Requests; BMW-MQTT-Stream, frühere Stände und andere Clients sind darin nicht enthalten."
     )
 
     return {
