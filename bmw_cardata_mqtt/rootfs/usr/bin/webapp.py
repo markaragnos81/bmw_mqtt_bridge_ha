@@ -131,9 +131,30 @@ def _format_countdown(target_ts: Optional[float]) -> Optional[str]:
     return f"noch {minutes} min"
 
 
+def _local_tz():
+    return datetime.now().astimezone().tzinfo
+
+
+def _format_local_timestamp(ts: Optional[float], with_tz: bool = True) -> Optional[str]:
+    if not ts:
+        return None
+    fmt = "%d.%m %H:%M %Z" if with_tz else "%d.%m %H:%M"
+    return datetime.fromtimestamp(ts, tz=_local_tz()).strftime(fmt)
+
+
+def _format_local_iso(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        return value
+    return dt.astimezone(_local_tz()).strftime("%d.%m %H:%M %Z")
+
+
 def _retry_ui_state() -> dict:
     retry_ts = store.next_retry_at
-    retry_str = datetime.fromtimestamp(retry_ts, tz=timezone.utc).strftime("%d.%m %H:%M UTC") if retry_ts else None
+    retry_str = _format_local_timestamp(retry_ts)
     retry_countdown = _format_countdown(retry_ts)
     retry_hint = None
     if retry_str and retry_countdown:
@@ -188,7 +209,7 @@ def _request_telemetry() -> dict:
     last_request_summary = None
     if last_request:
         ts = float(last_request.get("ts", 0) or 0)
-        last_request_at = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d.%m %H:%M UTC")
+        last_request_at = _format_local_timestamp(ts)
         last_request_summary = f"{last_request.get('method', 'GET')} {last_request.get('endpoint', '?')} -> {last_request.get('status', '?')}"
 
     interval_hint = "Kein periodisches HTTP-Polling aktiv"
@@ -806,7 +827,7 @@ def events_sse():
 def status_json():
     b      = bridge
     exp_ts = store.expires_at
-    exp_str = datetime.fromtimestamp(exp_ts, tz=timezone.utc).strftime("%d.%m %H:%M UTC") if exp_ts else "?"
+    exp_str = _format_local_timestamp(exp_ts) if exp_ts else "?"
     retry_state = _retry_ui_state()
     block_state = _block_reason_state()
     request_state = _request_telemetry()
@@ -823,8 +844,8 @@ def status_json():
         "retry_hint": retry_state["retry_hint"],
         "block_reason": block_state["block_reason"],
         "block_hint": block_state["block_hint"],
-        "last_connected_at": store.last_connected_at,
-        "last_quota_at": store.last_quota_at,
+        "last_connected_at": _format_local_iso(store.last_connected_at),
+        "last_quota_at": _format_local_iso(store.last_quota_at),
         "quota_error_count": store.quota_error_count,
         "request_count_24h": request_state["request_count_24h"],
         "last_request_at": request_state["last_request_at"],
@@ -861,7 +882,7 @@ def reset():
 def _dashboard_context() -> dict:
     ov = load_override()
     exp_ts = store.expires_at
-    exp_str = datetime.fromtimestamp(exp_ts, tz=timezone.utc).strftime("%d.%m %H:%M UTC") if exp_ts else "?"
+    exp_str = _format_local_timestamp(exp_ts) if exp_ts else "?"
     retry_state = _retry_ui_state()
     block_state = _block_reason_state()
     request_state = _request_telemetry()
@@ -880,8 +901,8 @@ def _dashboard_context() -> dict:
         "retry_hint": retry_state["retry_hint"],
         "block_reason": block_state["block_reason"],
         "block_hint": block_state["block_hint"],
-        "last_connected_at": store.last_connected_at,
-        "last_quota_at": store.last_quota_at,
+        "last_connected_at": _format_local_iso(store.last_connected_at),
+        "last_quota_at": _format_local_iso(store.last_quota_at),
         "quota_error_count": store.quota_error_count,
         "request_count_24h": request_state["request_count_24h"],
         "last_request_at": request_state["last_request_at"],
