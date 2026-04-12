@@ -1,4 +1,4 @@
-# Mark's Home Assistant Add-ons
+# Marka's Home Assistant Add-Ons
 
 This repository contains custom Home Assistant add-ons.
 
