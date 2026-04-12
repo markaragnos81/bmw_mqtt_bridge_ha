@@ -11,9 +11,11 @@ Flow:
 """
 
 import base64
+import hashlib
 import json
 import logging
 import os
+import secrets
 import threading
 import time
 from datetime import datetime, timezone
@@ -24,10 +26,11 @@ import requests
 log = logging.getLogger("bmw.client")
 
 # ── BMW endpoints ─────────────────────────────────────────────────────────────
-BMW_AUTH_BASE    = "https://customer.bff-prod.api.bmw.com"
-DEVICE_CODE_URL  = f"{BMW_AUTH_BASE}/eadrax-ucs/v1/presentation/oauth/authorize/device_code"
-TOKEN_URL        = f"{BMW_AUTH_BASE}/eadrax-ucs/v1/presentation/oauth/token"
+BMW_AUTH_BASE    = "https://customer.bmwgroup.com"
+DEVICE_CODE_URL  = f"{BMW_AUTH_BASE}/gcdm/oauth/device/code"
+TOKEN_URL        = f"{BMW_AUTH_BASE}/gcdm/oauth/token"
 VEHICLES_URL     = "https://api-cardata.bmwgroup.com/customers/vehicles"
+BMW_OAUTH_SCOPE  = "authenticate_user openid cardata:streaming:read"
 
 BMW_MQTT_HOST    = "customer.streaming-cardata.bmwgroup.com"
 BMW_MQTT_PORT    = 9000
@@ -121,13 +124,21 @@ class BMWDeviceFlow:
         self.store        = store
         self.gcid         = gcid
         self._device_code: Optional[str] = None
+        self._code_verifier: Optional[str] = None
         self._interval    = 5
 
     def start(self) -> dict:
         """Start flow → {user_code, verification_uri, expires_in}."""
+        self._code_verifier = _generate_code_verifier()
+        code_challenge = _code_challenge(self._code_verifier)
         resp = requests.post(
             DEVICE_CODE_URL,
-            data={"client_id": self.client_id, "scope": "openid profile email"},
+            data={
+                "client_id": self.client_id,
+                "scope": BMW_OAUTH_SCOPE,
+                "code_challenge": code_challenge,
+                "code_challenge_method": "S256",
+            },
             timeout=15,
         )
         if resp.status_code != 200:
@@ -153,9 +164,10 @@ class BMWDeviceFlow:
         resp = requests.post(
             TOKEN_URL,
             data={
-                "client_id":   self.client_id,
-                "device_code": self._device_code,
-                "grant_type":  "urn:ietf:params:oauth:grant-type:device_code",
+                "client_id":     self.client_id,
+                "device_code":   self._device_code,
+                "grant_type":    "urn:ietf:params:oauth:grant-type:device_code",
+                "code_verifier": self._code_verifier,
             },
             timeout=15,
         )
@@ -202,6 +214,16 @@ def _sanitize_verification_uri(value: Optional[str]) -> str:
     if text.startswith("http://") or text.startswith("https://"):
         return text
     return "https://www.bmw-connecteddrive.com/"
+
+
+def _generate_code_verifier(length: int = 96) -> str:
+    verifier = secrets.token_urlsafe(length)
+    return verifier[:length]
+
+
+def _code_challenge(code_verifier: str) -> str:
+    digest = hashlib.sha256(code_verifier.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
 def refresh_tokens(store: BMWTokenStore) -> bool:
