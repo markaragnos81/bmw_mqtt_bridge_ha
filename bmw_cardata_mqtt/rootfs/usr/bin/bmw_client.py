@@ -560,11 +560,9 @@ class BMWMQTTBridge:
             client_id=gcid,
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
             protocol=mqtt.MQTTv5,
-            transport="websockets",
         )
         c.tls_set()
         c.username_pw_set(gcid, id_token)
-        c.ws_set_options(path="/mqtt")
         c.on_connect    = self._bmw_on_connect
         c.on_message    = self._bmw_on_message
         c.on_disconnect = self._bmw_on_disconnect
