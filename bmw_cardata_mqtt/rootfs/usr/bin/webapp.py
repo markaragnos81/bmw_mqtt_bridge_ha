@@ -209,15 +209,20 @@ def _request_telemetry() -> dict:
     quota_remaining_24h = max(0, quota_limit_24h - quota_used_24h)
     mqtt_rate_limited = store.next_retry_at > now and store.quota_error_count > 0
     if quota_used_24h > 0:
-        quota_hint = (
-            f"HTTP-Quota lokal: {quota_used_24h}/{quota_limit_24h} genutzt, ca. {quota_remaining_24h} übrig"
+        api_quota_hint = (
+            f"CarData API lokal: {quota_used_24h}/{quota_limit_24h} Requests im 24h-Fenster, ca. {quota_remaining_24h} übrig"
         )
     else:
-        quota_hint = "HTTP-Quota lokal: noch keine belastbaren Add-on-Daten im 24h-Fenster"
+        api_quota_hint = "CarData API lokal: noch keine belastbaren Add-on-Daten im 24h-Fenster"
+    api_quota_note = (
+        "Nur Add-on-lokale REST/API-Requests; frühere Stände und andere Clients sind darin nicht enthalten."
+    )
     if mqtt_rate_limited:
-        quota_hint += " · BMW-MQTT-Limit aktuell separat aktiv"
-    quota_note = (
-        "Nur Add-on-lokale HTTP-Requests; BMW-MQTT-Stream, frühere Stände und andere Clients sind darin nicht enthalten."
+        stream_status = "BMW-Streaming aktuell blockiert"
+    else:
+        stream_status = "BMW-Streaming aktuell nicht blockiert"
+    stream_note = (
+        "BMW dokumentiert 50 API-Requests pro Tag und empfiehlt für häufigeren Zugriff die CarData-Streaming-Lösung."
     )
 
     return {
@@ -230,8 +235,11 @@ def _request_telemetry() -> dict:
         "quota_limit_24h": quota_limit_24h,
         "quota_used_24h": quota_used_24h,
         "quota_remaining_24h": quota_remaining_24h,
-        "quota_hint": quota_hint,
-        "quota_note": quota_note,
+        "api_quota_hint": api_quota_hint,
+        "api_quota_note": api_quota_note,
+        "stream_status": stream_status,
+        "stream_note": stream_note,
+        "mqtt_rate_limited": mqtt_rate_limited,
     }
 
 
@@ -493,17 +501,19 @@ PAGE = STYLE + """
   </div>
 
   <div class="card">
-    <h2>🌐 BMW Requests</h2>
-    <div id="req-quota" class="alert a-info" style="margin-bottom:.8rem">{{ quota_hint }}</div>
+    <h2>🌐 BMW API & Stream</h2>
+    <div id="api-quota" class="alert a-info" style="margin-bottom:.8rem">{{ api_quota_hint }}</div>
+    <div id="stream-status-banner" class="alert {{ 'a-err' if mqtt_rate_limited else 'a-ok' }}" style="margin-bottom:.8rem">{{ stream_status }}</div>
     <div class="stat-row">
-      <div class="stat"><div class="stat-val" id="req-count">{{ request_count_24h }}</div><div class="stat-lbl">HTTP Requests / 24h</div></div>
+      <div class="stat"><div class="stat-val" id="req-count">{{ request_count_24h }}</div><div class="stat-lbl">API Requests / 24h</div></div>
       <div class="stat"><div class="stat-val" style="font-size:.9rem" id="req-interval">{{ auth_poll_interval_s ~ 's' if auth_poll_interval_s else '–' }}</div><div class="stat-lbl">Akt. Poll-Intervall</div></div>
       <div class="stat"><div class="stat-val" style="font-size:.9rem" id="req-last-at">{{ last_request_at or '–' }}</div><div class="stat-lbl">Letzter BMW Request</div></div>
     </div>
-    <div id="req-hint" style="font-size:.8rem;color:#6b7280;margin-top:.6rem">Intervall: {{ request_interval_hint }}</div>
-    <div id="req-spacing" style="font-size:.8rem;color:#6b7280">{{ recent_request_spacing or 'Ø letzte HTTP-Abstände: –' }}</div>
+    <div id="req-hint" style="font-size:.8rem;color:#6b7280;margin-top:.6rem">API-Intervall: {{ request_interval_hint }}</div>
+    <div id="req-spacing" style="font-size:.8rem;color:#6b7280">{{ recent_request_spacing or 'Ø letzte API-Abstände: –' }}</div>
     <div id="req-summary" style="font-size:.78rem;color:#9ca3af">Letzter Request: {{ last_request_summary or '–' }}</div>
-    <div id="req-note" style="font-size:.78rem;color:#9ca3af">{{ quota_note }}</div>
+    <div id="api-note" style="font-size:.78rem;color:#9ca3af">{{ api_quota_note }}</div>
+    <div id="stream-note" style="font-size:.78rem;color:#9ca3af">{{ stream_note }}</div>
   </div>
 
   <div class="card">
@@ -564,11 +574,15 @@ PAGE = STYLE + """
         document.getElementById("req-count").textContent = d.request_count_24h;
         document.getElementById("req-interval").textContent = d.auth_poll_interval_s ? (d.auth_poll_interval_s + "s") : "–";
         document.getElementById("req-last-at").textContent = d.last_request_at || "–";
-        document.getElementById("req-quota").textContent = d.quota_hint || "HTTP-Quota lokal: –";
-        document.getElementById("req-hint").textContent = "Intervall: " + (d.request_interval_hint || "–");
-        document.getElementById("req-spacing").textContent = d.recent_request_spacing || "Ø letzte HTTP-Abstände: –";
+        document.getElementById("api-quota").textContent = d.api_quota_hint || "CarData API lokal: –";
+        const streamBanner = document.getElementById("stream-status-banner");
+        streamBanner.textContent = d.stream_status || "BMW-Streaming Status unbekannt";
+        streamBanner.className = "alert " + (d.mqtt_rate_limited ? "a-err" : "a-ok");
+        document.getElementById("req-hint").textContent = "API-Intervall: " + (d.request_interval_hint || "–");
+        document.getElementById("req-spacing").textContent = d.recent_request_spacing || "Ø letzte API-Abstände: –";
         document.getElementById("req-summary").textContent = "Letzter Request: " + (d.last_request_summary || "–");
-        document.getElementById("req-note").textContent = d.quota_note || "";
+        document.getElementById("api-note").textContent = d.api_quota_note || "";
+        document.getElementById("stream-note").textContent = d.stream_note || "";
         const hdrRetry = document.getElementById("hdr-retry");
         if(hdrRetry){ hdrRetry.textContent = d.retry_hint || ""; hdrRetry.style.display = d.retry_hint ? "block" : "none"; }
         const hdrBlock = document.getElementById("hdr-block");
@@ -821,8 +835,11 @@ def status_json():
         "quota_limit_24h": request_state["quota_limit_24h"],
         "quota_used_24h": request_state["quota_used_24h"],
         "quota_remaining_24h": request_state["quota_remaining_24h"],
-        "quota_hint": request_state["quota_hint"],
-        "quota_note": request_state["quota_note"],
+        "api_quota_hint": request_state["api_quota_hint"],
+        "api_quota_note": request_state["api_quota_note"],
+        "stream_status": request_state["stream_status"],
+        "stream_note": request_state["stream_note"],
+        "mqtt_rate_limited": request_state["mqtt_rate_limited"],
     })
 
 
@@ -875,8 +892,11 @@ def _dashboard_context() -> dict:
         "quota_limit_24h": request_state["quota_limit_24h"],
         "quota_used_24h": request_state["quota_used_24h"],
         "quota_remaining_24h": request_state["quota_remaining_24h"],
-        "quota_hint": request_state["quota_hint"],
-        "quota_note": request_state["quota_note"],
+        "api_quota_hint": request_state["api_quota_hint"],
+        "api_quota_note": request_state["api_quota_note"],
+        "stream_status": request_state["stream_status"],
+        "stream_note": request_state["stream_note"],
+        "mqtt_rate_limited": request_state["mqtt_rate_limited"],
         "stream_mode": stream_mode(),
         "vehicles": vehicles,
         "sensor_count": len(BMWMQTTBridge.SENSORS),
