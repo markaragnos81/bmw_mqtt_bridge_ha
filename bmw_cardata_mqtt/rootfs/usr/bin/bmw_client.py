@@ -135,10 +135,15 @@ class BMWDeviceFlow:
         data = resp.json()
         self._device_code = data["device_code"]
         self._interval    = int(data.get("interval", 5))
+        verification_uri = _sanitize_verification_uri(data.get("verification_uri"))
+        verification_uri_complete = _sanitize_verification_uri(
+            data.get("verification_uri_complete")
+        )
         return {
-            "user_code":        data["user_code"],
-            "verification_uri": data["verification_uri"],
-            "expires_in":       int(data.get("expires_in", 300)),
+            "user_code":                 data["user_code"],
+            "verification_uri":          verification_uri,
+            "verification_uri_complete": verification_uri_complete or verification_uri,
+            "expires_in":                int(data.get("expires_in", 300)),
         }
 
     def poll(self) -> Optional[dict]:
@@ -184,6 +189,19 @@ def _extract_gcid(jwt: str) -> Optional[str]:
         return payload.get("gcid") or payload.get("sub")
     except Exception:
         return None
+
+
+def _sanitize_verification_uri(value: Optional[str]) -> str:
+    if not value or not isinstance(value, str):
+        return "https://www.bmw-connecteddrive.com/"
+    text = value.strip()
+    if not text:
+        return "https://www.bmw-connecteddrive.com/"
+    if text.lower().startswith("<svg"):
+        return "https://www.bmw-connecteddrive.com/"
+    if text.startswith("http://") or text.startswith("https://"):
+        return text
+    return "https://www.bmw-connecteddrive.com/"
 
 
 def refresh_tokens(store: BMWTokenStore) -> bool:

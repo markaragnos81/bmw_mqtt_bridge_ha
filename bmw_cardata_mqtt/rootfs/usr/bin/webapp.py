@@ -210,9 +210,9 @@ PAGE = STYLE + """
       <li><span class="step-num sn-ok">✓</span><div>Client-ID gespeichert</div></li>
       <li><span class="step-num sn-blue">1</span>
         <div>
-          Öffne diese URL in deinem Browser:<br>
+          Öffne den BMW-Login in deinem Browser:<br>
+          <a href="{{ login_url }}" target="_blank" rel="noopener" class="btn btn-primary btn-sm" style="margin:.45rem 0 .55rem 0">BMW Login öffnen</a><br>
           <span class="url-chip">{{ verification_uri }}</span>
-          Oder scanne den QR-Code deines Geräts.
         </div>
       </li>
       <li><span class="step-num sn-blue">2</span>
@@ -435,6 +435,7 @@ def setup_post():
         threading.Thread(target=_poll_loop, args=(flow,), daemon=True).start()
         return render("auth",
                       user_code=info["user_code"],
+                      login_url=info["verification_uri_complete"],
                       verification_uri=info["verification_uri"],
                       expires_min=info["expires_in"]//60)
     except Exception as exc:
