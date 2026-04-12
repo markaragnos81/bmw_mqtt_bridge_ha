@@ -77,7 +77,7 @@ app.secret_key = os.urandom(32)
 
 
 def B() -> str:
-    return INGRESS_PATH
+    return request.headers.get("X-Ingress-Path", INGRESS_PATH)
 
 
 # ── HTML Template ─────────────────────────────────────────────────────────────
