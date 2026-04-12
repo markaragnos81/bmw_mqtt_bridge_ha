@@ -204,6 +204,15 @@ def _request_telemetry() -> dict:
         if diffs:
             avg_diff = int(sum(diffs) / len(diffs))
             recent_spacing = f"Ø letzte HTTP-Abstände: {avg_diff}s"
+    quota_limit_24h = 50
+    quota_used_24h = len(last_24h)
+    quota_remaining_24h = max(0, quota_limit_24h - quota_used_24h)
+    quota_hint = (
+        f"HTTP-Quota lokal: {quota_used_24h}/{quota_limit_24h} genutzt, ca. {quota_remaining_24h} übrig"
+    )
+    quota_note = (
+        "Nur Add-on-lokale HTTP-Requests; BMW-MQTT-Stream und andere Clients sind darin nicht enthalten."
+    )
 
     return {
         "request_count_24h": len(last_24h),
@@ -212,6 +221,11 @@ def _request_telemetry() -> dict:
         "request_interval_hint": interval_hint,
         "recent_request_spacing": recent_spacing,
         "auth_poll_interval_s": auth_poll_interval_s,
+        "quota_limit_24h": quota_limit_24h,
+        "quota_used_24h": quota_used_24h,
+        "quota_remaining_24h": quota_remaining_24h,
+        "quota_hint": quota_hint,
+        "quota_note": quota_note,
     }
 
 
@@ -474,6 +488,7 @@ PAGE = STYLE + """
 
   <div class="card">
     <h2>🌐 BMW Requests</h2>
+    <div id="req-quota" class="alert a-info" style="margin-bottom:.8rem">{{ quota_hint }}</div>
     <div class="stat-row">
       <div class="stat"><div class="stat-val" id="req-count">{{ request_count_24h }}</div><div class="stat-lbl">HTTP Requests / 24h</div></div>
       <div class="stat"><div class="stat-val" style="font-size:.9rem" id="req-interval">{{ auth_poll_interval_s ~ 's' if auth_poll_interval_s else '–' }}</div><div class="stat-lbl">Akt. Poll-Intervall</div></div>
@@ -482,6 +497,7 @@ PAGE = STYLE + """
     <div id="req-hint" style="font-size:.8rem;color:#6b7280;margin-top:.6rem">Intervall: {{ request_interval_hint }}</div>
     <div id="req-spacing" style="font-size:.8rem;color:#6b7280">{{ recent_request_spacing or 'Ø letzte HTTP-Abstände: –' }}</div>
     <div id="req-summary" style="font-size:.78rem;color:#9ca3af">Letzter Request: {{ last_request_summary or '–' }}</div>
+    <div id="req-note" style="font-size:.78rem;color:#9ca3af">{{ quota_note }}</div>
   </div>
 
   <div class="card">
@@ -542,9 +558,11 @@ PAGE = STYLE + """
         document.getElementById("req-count").textContent = d.request_count_24h;
         document.getElementById("req-interval").textContent = d.auth_poll_interval_s ? (d.auth_poll_interval_s + "s") : "–";
         document.getElementById("req-last-at").textContent = d.last_request_at || "–";
+        document.getElementById("req-quota").textContent = d.quota_hint || "HTTP-Quota lokal: –";
         document.getElementById("req-hint").textContent = "Intervall: " + (d.request_interval_hint || "–");
         document.getElementById("req-spacing").textContent = d.recent_request_spacing || "Ø letzte HTTP-Abstände: –";
         document.getElementById("req-summary").textContent = "Letzter Request: " + (d.last_request_summary || "–");
+        document.getElementById("req-note").textContent = d.quota_note || "";
         const hdrRetry = document.getElementById("hdr-retry");
         if(hdrRetry){ hdrRetry.textContent = d.retry_hint || ""; hdrRetry.style.display = d.retry_hint ? "block" : "none"; }
         const hdrBlock = document.getElementById("hdr-block");
@@ -794,6 +812,11 @@ def status_json():
         "request_interval_hint": request_state["request_interval_hint"],
         "recent_request_spacing": request_state["recent_request_spacing"],
         "auth_poll_interval_s": request_state["auth_poll_interval_s"],
+        "quota_limit_24h": request_state["quota_limit_24h"],
+        "quota_used_24h": request_state["quota_used_24h"],
+        "quota_remaining_24h": request_state["quota_remaining_24h"],
+        "quota_hint": request_state["quota_hint"],
+        "quota_note": request_state["quota_note"],
     })
 
 
@@ -843,6 +866,11 @@ def _dashboard_context() -> dict:
         "request_interval_hint": request_state["request_interval_hint"],
         "recent_request_spacing": request_state["recent_request_spacing"],
         "auth_poll_interval_s": request_state["auth_poll_interval_s"],
+        "quota_limit_24h": request_state["quota_limit_24h"],
+        "quota_used_24h": request_state["quota_used_24h"],
+        "quota_remaining_24h": request_state["quota_remaining_24h"],
+        "quota_hint": request_state["quota_hint"],
+        "quota_note": request_state["quota_note"],
         "stream_mode": stream_mode(),
         "vehicles": vehicles,
         "sensor_count": len(BMWMQTTBridge.SENSORS),
