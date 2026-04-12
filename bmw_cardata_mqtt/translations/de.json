@@ -6,6 +6,7 @@
     "mqtt_password": { "name": "MQTT Passwort", "description": "Passwort (leer lassen wenn keine Auth nötig)" },
     "bmw_prefix":    { "name": "Topic-Präfix",  "description": "MQTT-Präfix für alle BMW-Topics, z.B. bmw/ oder auto/bmw/" },
     "stream_mode":   { "name": "Stream-Modus",  "description": "always_on = Bridge startet automatisch; conservative = nur manuell über das Dashboard starten" },
+    "active_window": { "name": "Zeitfenster",   "description": "Optionale aktive Zeitfenster im Format HH:MM-HH:MM, mehrere per Komma, z.B. 06:00-09:00,16:00-22:00" },
     "log_level":     { "name": "Log-Level",     "description": "debug | info | warning | error" }
   }
 }

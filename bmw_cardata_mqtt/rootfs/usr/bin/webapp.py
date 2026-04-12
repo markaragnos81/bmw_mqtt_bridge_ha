@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -43,8 +44,10 @@ def load_options() -> dict:
             data = json.load(f)
             if "stream_mode" not in data:
                 data["stream_mode"] = "always_on"
+            if "active_window" not in data:
+                data["active_window"] = ""
             return data
-    return {"stream_mode": "always_on"}
+    return {"stream_mode": "always_on", "active_window": ""}
 
 
 def load_override() -> dict:
@@ -65,8 +68,60 @@ def stream_mode() -> str:
     return load_options().get("stream_mode", "always_on")
 
 
+def active_window() -> str:
+    return load_options().get("active_window", "").strip()
+
+
+def _parse_hhmm(value: str) -> int:
+    hour, minute = value.split(":", 1)
+    return int(hour) * 60 + int(minute)
+
+
+def _window_ranges(raw: str) -> list[tuple[int, int]]:
+    ranges: list[tuple[int, int]] = []
+    for chunk in [part.strip() for part in raw.split(",") if part.strip()]:
+        if not re.match(r"^\d{2}:\d{2}-\d{2}:\d{2}$", chunk):
+            continue
+        start_s, end_s = chunk.split("-", 1)
+        ranges.append((_parse_hhmm(start_s), _parse_hhmm(end_s)))
+    return ranges
+
+
+def within_active_window(now_ts: Optional[float] = None) -> bool:
+    raw = active_window()
+    if not raw:
+        return True
+    now = datetime.fromtimestamp(now_ts or time.time())
+    cur = now.hour * 60 + now.minute
+    for start, end in _window_ranges(raw):
+        if start == end:
+            return True
+        if start < end and start <= cur < end:
+            return True
+        if start > end and (cur >= start or cur < end):
+            return True
+    return False
+
+
+def next_window_start(now_ts: Optional[float] = None) -> Optional[str]:
+    raw = active_window()
+    if not raw:
+        return None
+    now = datetime.fromtimestamp(now_ts or time.time())
+    cur = now.hour * 60 + now.minute
+    candidates = []
+    for start, _end in _window_ranges(raw):
+        delta = (start - cur) % (24 * 60)
+        candidates.append(delta)
+    if not candidates:
+        return None
+    delta_min = min(candidates)
+    target = now.timestamp() + delta_min * 60
+    return datetime.fromtimestamp(target).strftime("%d.%m %H:%M")
+
+
 def should_auto_start() -> bool:
-    return stream_mode() == "always_on"
+    return stream_mode() == "always_on" and within_active_window()
 
 
 def push_sse(event: str, data: dict):
@@ -299,6 +354,7 @@ PAGE = STYLE + """
       <div class="stat"><div class="stat-val" style="font-size:.9rem" id="token-exp">{{ token_exp }}</div><div class="stat-lbl">Token gültig bis</div></div>
       <div class="stat"><div class="stat-val">{{ vehicles|length }}</div><div class="stat-lbl">Fahrzeug{{ 'e' if vehicles|length != 1 else '' }}</div></div>
     </div>
+    <div id="window-state" style="font-size:.8rem;color:#6b7280;margin-top:.6rem">Zeitfenster: {{ active_window or 'immer aktiv' }}{% if not window_open %} · Nächstes Fenster: {{ next_window_start or '–' }}{% endif %}</div>
     <div id="rate-limit" style="font-size:.8rem;color:#6b7280;margin-top:.6rem">Nächster Retry: {{ next_retry_at or '–' }}</div>
     <div id="last-connect" style="font-size:.8rem;color:#6b7280">Letzte BMW-Verbindung: {{ last_connected_at or '–' }}</div>
     <div id="last-quota" style="font-size:.8rem;color:#6b7280">Letztes Rate-Limit: {{ last_quota_at or '–' }}{% if quota_error_count %} ({{ quota_error_count }}x){% endif %}</div>
@@ -355,6 +411,7 @@ PAGE = STYLE + """
         document.getElementById("msg-count").textContent = d.message_count;
         document.getElementById("last-msg").textContent  = "Letzte Nachricht: " + (d.last_message||"–");
         document.getElementById("token-exp").textContent = d.token_exp;
+        document.getElementById("window-state").textContent = "Zeitfenster: " + (d.active_window || "immer aktiv") + (!d.window_open ? " · Nächstes Fenster: " + (d.next_window_start || "–") : "");
         document.getElementById("rate-limit").textContent = "Nächster Retry: " + (d.next_retry_at||"–");
         document.getElementById("last-connect").textContent = "Letzte BMW-Verbindung: " + (d.last_connected_at||"–");
         document.getElementById("last-quota").textContent = "Letztes Rate-Limit: " + (d.last_quota_at||"–") + (d.quota_error_count ? " (" + d.quota_error_count + "x)" : "");
@@ -426,27 +483,7 @@ def index():
 
 
 def _dashboard():
-    opts        = load_options()
-    ov          = load_override()
-    b           = bridge
-    exp_ts      = store.expires_at
-    exp_str     = datetime.fromtimestamp(exp_ts, tz=timezone.utc).strftime("%d.%m %H:%M UTC") if exp_ts else "?"
-    next_retry  = store.next_retry_at
-    next_retry_str = datetime.fromtimestamp(next_retry, tz=timezone.utc).strftime("%d.%m %H:%M UTC") if next_retry else None
-    sel_vins    = ov.get("selected_vins", [])
-    vehicles    = [v for v in (ov.get("vehicles") or []) if v["vin"] in sel_vins]
-    return render("dashboard",
-                  status=b.status if b else "stopped",
-                  msg_count=b.message_count if b else 0,
-                  last_msg=b.last_message if b else None,
-                  token_exp=exp_str,
-                  next_retry_at=next_retry_str,
-                  last_connected_at=store.last_connected_at,
-                  last_quota_at=store.last_quota_at,
-                  quota_error_count=store.quota_error_count,
-                  stream_mode=stream_mode(),
-                  vehicles=vehicles,
-                  sensor_count=len(BMWMQTTBridge.SENSORS))
+    return render("dashboard", **_dashboard_context())
 
 
 @app.route("/setup")
@@ -534,6 +571,8 @@ def pick_again():
 def reload_vehicles():
     if not store.has_tokens:
         return redirect(B() + "/setup")
+    if not within_active_window():
+        return render("dashboard", error="Fahrzeuge neu laden ist außerhalb des Zeitfensters blockiert.", **_dashboard_context())
     try:
         vehicles = fetch_vehicles(store, force_refresh=True)
     except BMWAuthError as exc:
@@ -544,6 +583,8 @@ def reload_vehicles():
 
 @app.route("/start_bridge", methods=["POST"])
 def start_bridge():
+    if not within_active_window():
+        return render("dashboard", error="Bridge-Start ist außerhalb des konfigurierten Zeitfensters blockiert.", **_dashboard_context())
     _maybe_start_bridge(force=True)
     return redirect(B() + "/")
 
@@ -594,6 +635,9 @@ def status_json():
         "message_count": b.message_count if b else 0,
         "last_message":  b.last_message if b else None,
         "token_exp":     exp_str,
+        "active_window": active_window(),
+        "window_open": within_active_window(),
+        "next_window_start": next_window_start(),
         "next_retry_at": retry_str,
         "last_connected_at": store.last_connected_at,
         "last_quota_at": store.last_quota_at,
@@ -616,6 +660,32 @@ def reset():
 
 # ── Bridge control ────────────────────────────────────────────────────────────
 
+def _dashboard_context() -> dict:
+    ov = load_override()
+    exp_ts = store.expires_at
+    exp_str = datetime.fromtimestamp(exp_ts, tz=timezone.utc).strftime("%d.%m %H:%M UTC") if exp_ts else "?"
+    retry_ts = store.next_retry_at
+    retry_str = datetime.fromtimestamp(retry_ts, tz=timezone.utc).strftime("%d.%m %H:%M UTC") if retry_ts else None
+    sel_vins = ov.get("selected_vins", [])
+    vehicles = [v for v in (ov.get("vehicles") or []) if v["vin"] in sel_vins]
+    return {
+        "status": bridge.status if bridge else "stopped",
+        "msg_count": bridge.message_count if bridge else 0,
+        "last_msg": bridge.last_message if bridge else None,
+        "token_exp": exp_str,
+        "active_window": active_window(),
+        "window_open": within_active_window(),
+        "next_window_start": next_window_start(),
+        "next_retry_at": retry_str,
+        "last_connected_at": store.last_connected_at,
+        "last_quota_at": store.last_quota_at,
+        "quota_error_count": store.quota_error_count,
+        "stream_mode": stream_mode(),
+        "vehicles": vehicles,
+        "sensor_count": len(BMWMQTTBridge.SENSORS),
+    }
+
+
 def _maybe_start_bridge(force: bool = False):
     global bridge
     opts  = load_options()
@@ -627,6 +697,10 @@ def _maybe_start_bridge(force: bool = False):
         store.save({"gcid": ov["gcid"]})
 
     if not sel_vehicles or not store.has_tokens:
+        return
+
+    if not within_active_window():
+        log.info("BMW bridge start skipped: outside configured active window")
         return
 
     if not force and not should_auto_start():
