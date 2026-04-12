@@ -1,4 +1,4 @@
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-python:3.11
+ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:latest
 FROM $BUILD_FROM
 
 LABEL \
@@ -7,9 +7,13 @@ LABEL \
   io.hass.type="addon" \
   io.hass.version="3.0.0"
 
-RUN apk add --no-cache openssl ca-certificates
+RUN apk add --no-cache \
+    ca-certificates \
+    openssl \
+    py3-pip \
+    python3
 
-RUN pip3 install --no-cache-dir \
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
     flask==3.0.3 \
     paho-mqtt==2.1.0 \
     requests==2.31.0
