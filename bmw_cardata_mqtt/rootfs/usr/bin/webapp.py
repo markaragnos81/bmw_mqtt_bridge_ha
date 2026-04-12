@@ -660,7 +660,7 @@ def test_mqtt(host: str, port: int, user: str, pw: str) -> bool:
 @app.route("/")
 def index():
     # If bridge is running → dashboard
-    if bridge and bridge.status not in ("stopped", "error", "auth_error"):
+    if bridge and getattr(bridge, "is_running", False):
         return _dashboard()
     # If tokens exist but no bridge → restart bridge
     if store.has_tokens:
@@ -942,6 +942,9 @@ def _maybe_start_bridge(force: bool = False):
         return
 
     if not force and not should_auto_start():
+        return
+
+    if bridge and getattr(bridge, "is_running", False):
         return
 
     if bridge:

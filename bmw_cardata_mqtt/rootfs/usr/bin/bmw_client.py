@@ -557,6 +557,10 @@ class BMWMQTTBridge:
         self._thread  = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
 
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
     def stop(self):
         self._running = False
         self._cancel_offline_timer()
