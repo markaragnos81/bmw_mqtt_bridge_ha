@@ -436,7 +436,7 @@ def setup_post():
         threading.Thread(target=_poll_loop, args=(flow,), daemon=True).start()
         return render("auth",
                       user_code=info["user_code"],
-                      login_url=info["verification_uri_complete"],
+                      login_url=info["verification_uri"],
                       verification_host=info["verification_host"],
                       verification_uri=info["verification_uri"],
                       expires_min=info["expires_in"]//60)

@@ -471,6 +471,7 @@ class BMWMQTTBridge:
         self._running     = False
         self._thread:     Optional[threading.Thread] = None
         self._offline_timer: Optional[threading.Timer] = None
+        self._next_retry_at = 0.0
 
         self.status        = "stopped"
         self.last_message  = None
@@ -523,11 +524,14 @@ class BMWMQTTBridge:
                 log.error("Bridge loop: %s", exc)
                 self._set_status("error")
                 self._publish_status("offline", connected=False, reason=f"bridge_error:{exc}")
+                if "Quota exceeded" in str(exc):
+                    self._set_retry_backoff("Quota exceeded")
 
             if self._running:
                 self._disconnect_clients()
-                log.info("Reconnecting in 30 s …")
-                time.sleep(30)
+                wait_s = self._retry_wait_seconds()
+                log.info("Reconnecting in %d s …", wait_s)
+                time.sleep(wait_s)
 
     # ── Local MQTT ────────────────────────────────────────────────────────────
 
@@ -575,9 +579,11 @@ class BMWMQTTBridge:
         if not self._reason_is_success(rc):
             log.error("BMW MQTT connect failed: %s", reason)
             self._set_status("bmw_connect_error")
+            self._set_retry_backoff(reason)
             self._publish_status("offline", connected=False, reason=f"connect_failed:{reason}")
             return
         self._cancel_offline_timer()
+        self._clear_retry_backoff()
         # Subscribe for all selected vehicles
         for v in self.vehicles:
             topic = f"{self.store.gcid}/{v['vin']}/#"
@@ -590,6 +596,7 @@ class BMWMQTTBridge:
         reason = self._reason_text(rc)
         log.warning("BMW MQTT disconnected: %s", reason)
         self._set_status("reconnecting")
+        self._set_retry_backoff(reason)
         self._schedule_offline_status(reason)
 
     def _bmw_on_message(self, client, userdata, msg: mqtt.MQTTMessage):
@@ -761,6 +768,22 @@ class BMWMQTTBridge:
         if self._offline_timer:
             self._offline_timer.cancel()
             self._offline_timer = None
+
+    def _set_retry_backoff(self, reason: str):
+        delay = 30
+        if "Quota exceeded" in reason:
+            delay = 15 * 60
+        elif "Server busy" in reason:
+            delay = 2 * 60
+        self._next_retry_at = time.time() + delay
+
+    def _clear_retry_backoff(self):
+        self._next_retry_at = 0.0
+
+    def _retry_wait_seconds(self) -> int:
+        if self._next_retry_at <= 0:
+            return 30
+        return max(1, int(self._next_retry_at - time.time()))
 
     def _disconnect_clients(self):
         for client in (self._bmw_client, self._local_client):
