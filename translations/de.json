@@ -1,0 +1,10 @@
+{
+  "configuration": {
+    "mqtt_host":     { "name": "MQTT Host",     "description": "Hostname des MQTT-Brokers (Standard: core-mosquitto für das Mosquitto-Addon)" },
+    "mqtt_port":     { "name": "MQTT Port",     "description": "Port des Brokers (Standard: 1883)" },
+    "mqtt_user":     { "name": "MQTT Benutzer", "description": "Benutzername (leer lassen wenn keine Auth nötig)" },
+    "mqtt_password": { "name": "MQTT Passwort", "description": "Passwort (leer lassen wenn keine Auth nötig)" },
+    "bmw_prefix":    { "name": "Topic-Präfix",  "description": "MQTT-Präfix für alle BMW-Topics, z.B. bmw/ oder auto/bmw/" },
+    "log_level":     { "name": "Log-Level",     "description": "debug | info | warning | error" }
+  }
+}
