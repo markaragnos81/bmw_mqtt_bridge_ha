@@ -145,6 +145,34 @@ def _retry_ui_state() -> dict:
     }
 
 
+def _block_reason_state() -> dict:
+    window_open = within_active_window()
+    retry_state = _retry_ui_state()
+    quota_blocked = bool(retry_state["retry_hint"])
+    reasons = []
+    if not window_open:
+        reasons.append("Zeitfenster geschlossen")
+    if quota_blocked:
+        reasons.append("BMW Rate-Limit aktiv")
+    blocked = bool(reasons)
+    block_reason = " + ".join(reasons) if reasons else None
+    block_hint = None
+    if blocked:
+        detail_parts = []
+        if not window_open and active_window():
+            detail_parts.append(f"Zeitfenster: {active_window()}")
+            if next_window_start():
+                detail_parts.append(f"nächstes Fenster ab {next_window_start()}")
+        if quota_blocked:
+            detail_parts.append(retry_state["retry_hint"])
+        block_hint = "Blockiert: " + " · ".join(detail_parts)
+    return {
+        "blocked": blocked,
+        "block_reason": block_reason,
+        "block_hint": block_hint,
+    }
+
+
 def should_auto_start() -> bool:
     return stream_mode() == "always_on" and within_active_window()
 
@@ -241,6 +269,9 @@ PAGE = STYLE + """
     <small>Home Assistant Addon v3</small>
     {% if phase == 'dashboard' and retry_hint %}
     <small id="hdr-retry" style="display:block;color:#fde68a;opacity:1;margin-top:.2rem">{{ retry_hint }}</small>
+    {% endif %}
+    {% if phase == 'dashboard' and block_hint %}
+    <small id="hdr-block" style="display:block;color:#fca5a5;opacity:1;margin-top:.2rem">{{ block_hint }}</small>
     {% endif %}
   </div>
   {% if phase == 'dashboard' %}
@@ -380,6 +411,9 @@ PAGE = STYLE + """
   {% elif phase == 'dashboard' %}
   <div class="card">
     <h2>📊 Verbindungsstatus</h2>
+    {% if block_hint %}
+    <div id="block-banner" class="alert a-err" style="margin-bottom:.8rem">⛔ {{ block_hint }}</div>
+    {% endif %}
     {% if retry_hint %}
     <div id="retry-banner" class="alert a-info" style="margin-bottom:.8rem">⏳ {{ retry_hint }}</div>
     {% endif %}
@@ -389,6 +423,7 @@ PAGE = STYLE + """
       <div class="stat"><div class="stat-val">{{ vehicles|length }}</div><div class="stat-lbl">Fahrzeug{{ 'e' if vehicles|length != 1 else '' }}</div></div>
     </div>
     <div id="window-state" style="font-size:.8rem;color:#6b7280;margin-top:.6rem">Zeitfenster: {{ active_window or 'immer aktiv' }}{% if not window_open %} · Nächstes Fenster: {{ next_window_start or '–' }}{% endif %}</div>
+    <div id="block-state" style="font-size:.8rem;color:#6b7280;margin-top:.6rem">Startstatus: {{ block_reason or 'nicht blockiert' }}</div>
     <div id="rate-limit" style="font-size:.8rem;color:#6b7280;margin-top:.6rem">Nächster Retry: {{ next_retry_at or '–' }}{% if retry_countdown %} · {{ retry_countdown }}{% endif %}</div>
     <div id="last-connect" style="font-size:.8rem;color:#6b7280">Letzte BMW-Verbindung: {{ last_connected_at or '–' }}</div>
     <div id="last-quota" style="font-size:.8rem;color:#6b7280">Letztes Rate-Limit: {{ last_quota_at or '–' }}{% if quota_error_count %} ({{ quota_error_count }}x){% endif %}</div>
@@ -446,11 +481,16 @@ PAGE = STYLE + """
         document.getElementById("last-msg").textContent  = "Letzte Nachricht: " + (d.last_message||"–");
         document.getElementById("token-exp").textContent = d.token_exp;
         document.getElementById("window-state").textContent = "Zeitfenster: " + (d.active_window || "immer aktiv") + (!d.window_open ? " · Nächstes Fenster: " + (d.next_window_start || "–") : "");
+        document.getElementById("block-state").textContent = "Startstatus: " + (d.block_reason || "nicht blockiert");
         document.getElementById("rate-limit").textContent = "Nächster Retry: " + (d.next_retry_at||"–") + (d.retry_countdown ? " · " + d.retry_countdown : "");
         document.getElementById("last-connect").textContent = "Letzte BMW-Verbindung: " + (d.last_connected_at||"–");
         document.getElementById("last-quota").textContent = "Letztes Rate-Limit: " + (d.last_quota_at||"–") + (d.quota_error_count ? " (" + d.quota_error_count + "x)" : "");
         const hdrRetry = document.getElementById("hdr-retry");
         if(hdrRetry){ hdrRetry.textContent = d.retry_hint || ""; hdrRetry.style.display = d.retry_hint ? "block" : "none"; }
+        const hdrBlock = document.getElementById("hdr-block");
+        if(hdrBlock){ hdrBlock.textContent = d.block_hint || ""; hdrBlock.style.display = d.block_hint ? "block" : "none"; }
+        const blockBanner = document.getElementById("block-banner");
+        if(blockBanner){ blockBanner.textContent = d.block_hint ? "⛔ " + d.block_hint : ""; blockBanner.style.display = d.block_hint ? "block" : "none"; }
         const retryBanner = document.getElementById("retry-banner");
         if(retryBanner){ retryBanner.textContent = d.retry_hint ? "⏳ " + d.retry_hint : ""; retryBanner.style.display = d.retry_hint ? "block" : "none"; }
       });
@@ -667,6 +707,7 @@ def status_json():
     exp_ts = store.expires_at
     exp_str = datetime.fromtimestamp(exp_ts, tz=timezone.utc).strftime("%d.%m %H:%M UTC") if exp_ts else "?"
     retry_state = _retry_ui_state()
+    block_state = _block_reason_state()
     return jsonify({
         "status":        b.status if b else "stopped",
         "message_count": b.message_count if b else 0,
@@ -678,6 +719,8 @@ def status_json():
         "next_retry_at": retry_state["next_retry_at"],
         "retry_countdown": retry_state["retry_countdown"],
         "retry_hint": retry_state["retry_hint"],
+        "block_reason": block_state["block_reason"],
+        "block_hint": block_state["block_hint"],
         "last_connected_at": store.last_connected_at,
         "last_quota_at": store.last_quota_at,
         "quota_error_count": store.quota_error_count,
@@ -704,6 +747,7 @@ def _dashboard_context() -> dict:
     exp_ts = store.expires_at
     exp_str = datetime.fromtimestamp(exp_ts, tz=timezone.utc).strftime("%d.%m %H:%M UTC") if exp_ts else "?"
     retry_state = _retry_ui_state()
+    block_state = _block_reason_state()
     sel_vins = ov.get("selected_vins", [])
     vehicles = [v for v in (ov.get("vehicles") or []) if v["vin"] in sel_vins]
     return {
@@ -717,6 +761,8 @@ def _dashboard_context() -> dict:
         "next_retry_at": retry_state["next_retry_at"],
         "retry_countdown": retry_state["retry_countdown"],
         "retry_hint": retry_state["retry_hint"],
+        "block_reason": block_state["block_reason"],
+        "block_hint": block_state["block_hint"],
         "last_connected_at": store.last_connected_at,
         "last_quota_at": store.last_quota_at,
         "quota_error_count": store.quota_error_count,
