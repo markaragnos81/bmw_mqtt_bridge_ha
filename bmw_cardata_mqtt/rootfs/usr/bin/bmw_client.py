@@ -614,12 +614,10 @@ class BMWMQTTBridge:
         self._cancel_offline_timer()
         self._set_status("stopped")
         self._publish_status("offline", connected=False, reason="stopped")
-        for c in (self._bmw_client, self._local_client):
-            try:
-                if c:
-                    c.disconnect()
-            except Exception:
-                pass
+        self._disconnect_clients()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2)
+        self._thread = None
 
     def _set_status(self, s: str):
         self.status = s

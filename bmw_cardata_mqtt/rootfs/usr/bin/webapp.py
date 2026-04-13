@@ -291,6 +291,25 @@ def on_bridge_status(status: str):
     push_sse("bridge_status", {"status": status})
 
 
+def _clear_runtime_state():
+    store.set(
+        next_retry_at=0,
+        next_retry_reason="",
+        quota_error_count=0,
+        last_quota_at=None,
+        last_stream_connect_attempt_at=0,
+        preferred_stream_transport="tcp",
+        auth_poll_interval_s=0,
+    )
+
+
+def _stop_bridge():
+    global bridge
+    if bridge:
+        bridge.stop()
+        bridge = None
+
+
 # ── Flask ─────────────────────────────────────────────────────────────────────
 app = Flask(__name__)
 app.secret_key = os.urandom(32)
@@ -797,10 +816,7 @@ def start_bridge():
 
 @app.route("/stop_bridge", methods=["POST"])
 def stop_bridge():
-    global bridge
-    if bridge:
-        bridge.stop()
-        bridge = None
+    _stop_bridge()
     return redirect(B() + "/")
 
 
@@ -872,10 +888,8 @@ def status_json():
 
 @app.route("/reset", methods=["POST"])
 def reset():
-    global bridge
-    if bridge:
-        bridge.stop()
-        bridge = None
+    _stop_bridge()
+    _clear_runtime_state()
     store.clear()
     if os.path.exists(OVERRIDE_FILE):
         os.remove(OVERRIDE_FILE)
