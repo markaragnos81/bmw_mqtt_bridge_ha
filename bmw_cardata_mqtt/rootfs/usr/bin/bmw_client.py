@@ -559,10 +559,20 @@ class BMWMQTTBridge:
         self._thread:     Optional[threading.Thread] = None
         self._offline_timer: Optional[threading.Timer] = None
         self._next_retry_at = self.store.next_retry_at
+        self._next_retry_reason = self.store.next_retry_reason
         self._disconnect_expected = False
         self._stream_transport = self.store.preferred_stream_transport
         self._stream_connected_at_monotonic: Optional[float] = None
         self._stream_message_count_at_connect = 0
+
+        if self._next_retry_at > 0 and self._next_retry_reason != "quota_exceeded":
+            log.info(
+                "Clearing persisted BMW reconnect delay from previous session (reason=%s)",
+                self._next_retry_reason or "unknown",
+            )
+            self._next_retry_at = 0.0
+            self._next_retry_reason = ""
+            self.store.set(next_retry_at=0, next_retry_reason="")
 
         self.status        = "stopped"
         self.last_message  = None
@@ -916,6 +926,7 @@ class BMWMQTTBridge:
             retry_reason = "server_busy"
             delay = 2 * 60
         self._next_retry_at = time.time() + delay
+        self._next_retry_reason = retry_reason
         self.store.set(
             next_retry_at=self._next_retry_at,
             next_retry_reason=retry_reason,
@@ -923,6 +934,7 @@ class BMWMQTTBridge:
 
     def _clear_retry_backoff(self):
         self._next_retry_at = 0.0
+        self._next_retry_reason = ""
         self.store.set(next_retry_at=0, next_retry_reason="")
 
     def _retry_wait_seconds(self) -> int:
