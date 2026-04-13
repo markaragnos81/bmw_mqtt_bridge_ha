@@ -145,6 +145,10 @@ class BMWTokenStore:
         return float(self._data.get("last_stream_connect_attempt_at", 0) or 0)
 
     @property
+    def next_retry_reason(self) -> str:
+        return str(self._data.get("next_retry_reason", "") or "")
+
+    @property
     def request_events(self) -> list[dict]:
         events = self._data.get("request_events", [])
         return events if isinstance(events, list) else []
@@ -899,7 +903,9 @@ class BMWMQTTBridge:
 
     def _set_retry_backoff(self, reason: str):
         delay = 30
+        retry_reason = "stream_reconnect"
         if "Quota exceeded" in reason:
+            retry_reason = "quota_exceeded"
             quota_count = self.store.quota_error_count + 1
             delay = min(15 * 60 * (2 ** max(0, quota_count - 1)), 2 * 60 * 60)
             self.store.set(
@@ -907,13 +913,17 @@ class BMWMQTTBridge:
                 quota_error_count=quota_count,
             )
         elif "Server busy" in reason:
+            retry_reason = "server_busy"
             delay = 2 * 60
         self._next_retry_at = time.time() + delay
-        self.store.set(next_retry_at=self._next_retry_at)
+        self.store.set(
+            next_retry_at=self._next_retry_at,
+            next_retry_reason=retry_reason,
+        )
 
     def _clear_retry_backoff(self):
         self._next_retry_at = 0.0
-        self.store.set(next_retry_at=0)
+        self.store.set(next_retry_at=0, next_retry_reason="")
 
     def _retry_wait_seconds(self) -> int:
         if self._next_retry_at <= 0:

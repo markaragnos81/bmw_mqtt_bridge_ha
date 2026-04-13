@@ -156,13 +156,19 @@ def _retry_ui_state() -> dict:
     retry_ts = store.next_retry_at
     retry_str = _format_local_timestamp(retry_ts)
     retry_countdown = _format_countdown(retry_ts)
+    retry_reason = store.next_retry_reason
     retry_hint = None
-    if retry_str and retry_countdown:
+    if retry_str and retry_countdown and retry_reason == "quota_exceeded":
         retry_hint = f"Rate-Limit aktiv bis {retry_str} ({retry_countdown})"
+    reconnect_hint = None
+    if retry_str and retry_countdown and retry_reason and retry_reason != "quota_exceeded":
+        reconnect_hint = f"BMW-Stream Reconnect ab {retry_str} ({retry_countdown})"
     return {
         "next_retry_at": retry_str,
         "retry_countdown": retry_countdown,
         "retry_hint": retry_hint,
+        "reconnect_hint": reconnect_hint,
+        "retry_reason": retry_reason,
     }
 
 
@@ -186,6 +192,8 @@ def _block_reason_state() -> dict:
                 detail_parts.append(f"nächstes Fenster ab {next_window_start()}")
         if quota_blocked:
             detail_parts.append(retry_state["retry_hint"])
+        elif retry_state["reconnect_hint"]:
+            detail_parts.append(retry_state["reconnect_hint"])
         block_hint = "Hinweis: " + " · ".join(detail_parts)
     return {
         "blocked": blocked,
@@ -228,7 +236,7 @@ def _request_telemetry() -> dict:
     quota_limit_24h = 50
     quota_used_24h = len(last_24h)
     quota_remaining_24h = max(0, quota_limit_24h - quota_used_24h)
-    mqtt_rate_limited = store.next_retry_at > now and store.quota_error_count > 0
+    mqtt_rate_limited = store.next_retry_reason == "quota_exceeded" and store.next_retry_at > now
     if quota_used_24h > 0:
         api_quota_hint = (
             f"CarData API lokal: {quota_used_24h}/{quota_limit_24h} Requests im 24h-Fenster, ca. {quota_remaining_24h} übrig"
@@ -240,6 +248,8 @@ def _request_telemetry() -> dict:
     )
     if mqtt_rate_limited:
         stream_status = "BMW-Streaming aktuell blockiert"
+    elif store.next_retry_at > now:
+        stream_status = "BMW-Streaming Reconnect wartet"
     else:
         stream_status = "BMW-Streaming aktuell nicht blockiert"
     stream_note = (
