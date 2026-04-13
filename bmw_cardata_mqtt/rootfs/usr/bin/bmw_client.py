@@ -44,6 +44,10 @@ STATUS_STABLE_DELAY_S = 5
 STREAM_MIN_CONNECT_INTERVAL_S = 60
 STREAM_EARLY_DISCONNECT_BACKOFF_S = 5 * 60
 QUOTA_ERROR_RESET_S = 4 * 60 * 60
+STREAM_FAILURE_RESET_S = 6 * 60 * 60
+CIRCUIT_BREAKER_THRESHOLD = 6
+CIRCUIT_BREAKER_DELAY_S = 2 * 60 * 60
+SLEEP_SLICE_S = 1
 BMW_MQTT_KEEPALIVE_S = 30
 BMW_MQTT_WS_PATH = "/mqtt"
 BMW_MQTT_FALLBACK_DISCONNECT_WINDOW_S = 75
@@ -162,6 +166,29 @@ class BMWTokenStore:
         return float(self._data.get("last_stream_connect_attempt_at", 0) or 0)
 
     @property
+    def last_stream_failure_at(self) -> Optional[str]:
+        return self._data.get("last_stream_failure_at")
+
+    @property
+    def stream_failure_streak(self) -> int:
+        count = int(self._data.get("stream_failure_streak", 0) or 0)
+        if count <= 0:
+            return 0
+        last_failure_at = self.last_stream_failure_at
+        if not last_failure_at:
+            return count
+        try:
+            dt = datetime.fromisoformat(last_failure_at)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            age_s = (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds()
+            if age_s >= STREAM_FAILURE_RESET_S:
+                return 0
+        except ValueError:
+            return count
+        return count
+
+    @property
     def next_retry_reason(self) -> str:
         return str(self._data.get("next_retry_reason", "") or "")
 
@@ -204,6 +231,20 @@ class BMWTokenStore:
         if value not in {"tcp", "websockets"}:
             value = "tcp"
         self.save({"preferred_stream_transport": value})
+
+    def record_stream_failure(self) -> int:
+        streak = self.stream_failure_streak + 1
+        self.save({
+            "stream_failure_streak": streak,
+            "last_stream_failure_at": datetime.now(timezone.utc).isoformat(),
+        })
+        return streak
+
+    def clear_stream_failure_streak(self):
+        self.save({
+            "stream_failure_streak": 0,
+            "last_stream_failure_at": None,
+        })
 
 
 # ── OAuth2 Device Flow ────────────────────────────────────────────────────────
@@ -582,7 +623,7 @@ class BMWMQTTBridge:
         self._stream_connected_at_monotonic: Optional[float] = None
         self._stream_message_count_at_connect = 0
 
-        if self._next_retry_at > 0 and self._next_retry_reason != "quota_exceeded":
+        if self._next_retry_at > 0 and self._next_retry_reason not in {"quota_exceeded", "circuit_breaker_open"}:
             log.info(
                 "Clearing persisted BMW reconnect delay from previous session (reason=%s)",
                 self._next_retry_reason or "unknown",
@@ -634,7 +675,7 @@ class BMWMQTTBridge:
                     log.info("Token expired, refreshing …")
                     if not refresh_tokens(self.store):
                         self._set_status("auth_error")
-                        time.sleep(60)
+                        self._sleep_with_stop(60)
                         continue
 
                 self._sleep_until_stream_connect_allowed()
@@ -653,7 +694,7 @@ class BMWMQTTBridge:
                 self._disconnect_clients()
                 wait_s = self._retry_wait_seconds()
                 log.info("Reconnecting in %d s …", wait_s)
-                time.sleep(wait_s)
+                self._sleep_with_stop(wait_s)
 
     # ── Local MQTT ────────────────────────────────────────────────────────────
 
@@ -718,6 +759,7 @@ class BMWMQTTBridge:
         self._clear_retry_backoff()
         self._stream_connected_at_monotonic = time.monotonic()
         self._stream_message_count_at_connect = self.message_count
+        self.store.clear_stream_failure_streak()
         self.store.set(
             last_connected_at=datetime.now(timezone.utc).isoformat(),
             quota_error_count=0,
@@ -889,9 +931,11 @@ class BMWMQTTBridge:
             "last_message": self.last_message,
             "message_count": self.message_count,
             "next_retry_at": self.store.get().get("next_retry_at"),
+            "next_retry_reason": self.store.next_retry_reason,
             "last_connected_at": self.store.last_connected_at,
             "last_quota_at": self.store.last_quota_at,
             "quota_error_count": self.store.quota_error_count,
+            "stream_failure_streak": self.store.stream_failure_streak,
         }
         if self.store.expires_at:
             payload["token_expires_at"] = datetime.fromtimestamp(
@@ -930,22 +974,34 @@ class BMWMQTTBridge:
             self._offline_timer = None
 
     def _set_retry_backoff(self, reason: str):
+        failure_streak = self.store.record_stream_failure()
         delay = 30
         retry_reason = "stream_reconnect"
         if "Quota exceeded" in reason:
             retry_reason = "quota_exceeded"
             quota_count = self.store.quota_error_count + 1
-            delay = min(15 * 60 * (2 ** max(0, quota_count - 1)), 2 * 60 * 60)
+            delay = min(15 * 60 * (2 ** max(0, quota_count - 1)), 6 * 60 * 60)
             self.store.set(
                 last_quota_at=datetime.now(timezone.utc).isoformat(),
                 quota_error_count=quota_count,
             )
         elif "Server busy" in reason:
             retry_reason = "server_busy"
-            delay = 2 * 60
+            delay = min(2 * 60 * (2 ** max(0, failure_streak - 1)), 60 * 60)
         elif "Early stream disconnect" in reason:
             retry_reason = "early_stream_disconnect"
-            delay = STREAM_EARLY_DISCONNECT_BACKOFF_S
+            delay = min(
+                STREAM_EARLY_DISCONNECT_BACKOFF_S * (2 ** max(0, failure_streak - 1)),
+                2 * 60 * 60,
+            )
+        else:
+            delay = min(30 * (2 ** max(0, failure_streak - 1)), 30 * 60)
+        if (
+            retry_reason in {"stream_reconnect", "early_stream_disconnect", "server_busy"}
+            and failure_streak >= CIRCUIT_BREAKER_THRESHOLD
+        ):
+            retry_reason = "circuit_breaker_open"
+            delay = max(delay, CIRCUIT_BREAKER_DELAY_S)
         self._next_retry_at = time.time() + delay
         self._next_retry_reason = retry_reason
         self.store.set(
@@ -956,6 +1012,7 @@ class BMWMQTTBridge:
     def _clear_retry_backoff(self):
         self._next_retry_at = 0.0
         self._next_retry_reason = ""
+        self.store.clear_stream_failure_streak()
         self.store.set(next_retry_at=0, next_retry_reason="")
 
     def _retry_wait_seconds(self) -> int:
@@ -967,9 +1024,9 @@ class BMWMQTTBridge:
         wait_s = self._retry_wait_seconds()
         if self._next_retry_at > 0 and wait_s > 1:
             self._set_status("rate_limited")
-            self._publish_status("offline", connected=False, reason="rate_limited")
+            self._publish_status("offline", connected=False, reason=self._next_retry_reason or "rate_limited")
             log.info("Waiting %d s before next BMW reconnect attempt", wait_s)
-            time.sleep(wait_s)
+            self._sleep_with_stop(wait_s)
 
     def _sleep_until_stream_connect_allowed(self):
         last_attempt = self.store.last_stream_connect_attempt_at
@@ -987,7 +1044,7 @@ class BMWMQTTBridge:
                 "Waiting %d s to respect BMW stream connection rate policy",
                 wait_s,
             )
-            time.sleep(wait_s)
+            self._sleep_with_stop(wait_s)
 
     def _disconnect_clients(self):
         self._disconnect_expected = True
@@ -1017,6 +1074,13 @@ class BMWMQTTBridge:
         if reason_code is None:
             return "success"
         return str(reason_code)
+
+    def _sleep_with_stop(self, seconds: int | float) -> bool:
+        remaining = max(0.0, float(seconds or 0))
+        while self._running and remaining > 0:
+            time.sleep(min(SLEEP_SLICE_S, remaining))
+            remaining -= SLEEP_SLICE_S
+        return self._running
 
     def _is_early_stream_disconnect(self, reason: str, connected_for_s: Optional[int]) -> bool:
         if connected_for_s is None:

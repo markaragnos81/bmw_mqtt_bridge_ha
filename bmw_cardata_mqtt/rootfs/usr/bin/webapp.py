@@ -161,7 +161,9 @@ def _retry_ui_state() -> dict:
     if retry_str and retry_countdown and retry_reason == "quota_exceeded":
         retry_hint = f"Rate-Limit aktiv bis {retry_str} ({retry_countdown})"
     reconnect_hint = None
-    if retry_str and retry_countdown and retry_reason and retry_reason != "quota_exceeded":
+    if retry_str and retry_countdown and retry_reason == "circuit_breaker_open":
+        reconnect_hint = f"BMW-Stream Schutzpause bis {retry_str} ({retry_countdown})"
+    elif retry_str and retry_countdown and retry_reason and retry_reason != "quota_exceeded":
         reconnect_hint = f"BMW-Stream Reconnect ab {retry_str} ({retry_countdown})"
     return {
         "next_retry_at": retry_str,
@@ -224,36 +226,42 @@ def _request_telemetry() -> dict:
     auth_poll_interval_s = store.auth_poll_interval_s
     if auth_poll_interval_s > 0:
         interval_hint = f"BMW OneID Polling aktuell alle {auth_poll_interval_s}s"
-    elif store.next_retry_at > time.time():
-        interval_hint = "Kein HTTP-Polling; BMW MQTT Reconnect läuft im Backoff"
+    elif store.next_retry_reason == "circuit_breaker_open" and store.next_retry_at > now:
+        interval_hint = "BMW MQTT Circuit Breaker aktiv; Reconnect ist bewusst pausiert"
+    elif store.next_retry_at > now:
+        interval_hint = "Kein HTTP-Polling; BMW MQTT Reconnect laeuft im Backoff"
+
     recent_spacing = None
     if len(last_24h) >= 2:
         ts_values = [float(event.get("ts", 0) or 0) for event in last_24h[-5:]]
         diffs = [int(ts_values[i] - ts_values[i - 1]) for i in range(1, len(ts_values)) if ts_values[i] > ts_values[i - 1]]
         if diffs:
             avg_diff = int(sum(diffs) / len(diffs))
-            recent_spacing = f"Ø letzte HTTP-Abstände: {avg_diff}s"
+            recent_spacing = f"Durchschnitt letzte HTTP-Abstaende: {avg_diff}s"
+
     quota_limit_24h = 50
     quota_used_24h = len(last_24h)
     quota_remaining_24h = max(0, quota_limit_24h - quota_used_24h)
     mqtt_rate_limited = store.next_retry_reason == "quota_exceeded" and store.next_retry_at > now
     if quota_used_24h > 0:
         api_quota_hint = (
-            f"CarData API lokal: {quota_used_24h}/{quota_limit_24h} Requests im 24h-Fenster, ca. {quota_remaining_24h} übrig"
+            f"CarData API lokal: {quota_used_24h}/{quota_limit_24h} Requests im 24h-Fenster, ca. {quota_remaining_24h} uebrig"
         )
     else:
         api_quota_hint = "CarData API lokal: noch keine belastbaren Add-on-Daten im 24h-Fenster"
     api_quota_note = (
-        "Nur Add-on-lokale REST/API-Requests; frühere Stände und andere Clients sind darin nicht enthalten."
+        "Nur Add-on-lokale REST/API-Requests; fruehere Staende und andere Clients sind darin nicht enthalten."
     )
     if mqtt_rate_limited:
         stream_status = "BMW-Streaming aktuell blockiert"
+    elif store.next_retry_reason == "circuit_breaker_open" and store.next_retry_at > now:
+        stream_status = "BMW-Streaming Schutzpause aktiv"
     elif store.next_retry_at > now:
         stream_status = "BMW-Streaming Reconnect wartet"
     else:
         stream_status = "BMW-Streaming aktuell nicht blockiert"
     stream_note = (
-        "BMW dokumentiert 50 API-Requests pro Tag und empfiehlt für häufigeren Zugriff die CarData-Streaming-Lösung."
+        "BMW dokumentiert 50 API-Requests pro Tag und empfiehlt fuer haeufigeren Zugriff die CarData-Streaming-Loesung."
     )
 
     return {
@@ -271,6 +279,8 @@ def _request_telemetry() -> dict:
         "stream_status": stream_status,
         "stream_note": stream_note,
         "mqtt_rate_limited": mqtt_rate_limited,
+        "stream_failure_streak": store.stream_failure_streak,
+        "retry_reason": store.next_retry_reason,
     }
 
 
@@ -296,6 +306,8 @@ def _clear_runtime_state():
         next_retry_at=0,
         next_retry_reason="",
         quota_error_count=0,
+        stream_failure_streak=0,
+        last_stream_failure_at=None,
         last_quota_at=None,
         last_stream_connect_attempt_at=0,
         preferred_stream_transport="tcp",
@@ -869,6 +881,8 @@ def status_json():
         "last_connected_at": _format_local_iso(store.last_connected_at),
         "last_quota_at": _format_local_iso(store.last_quota_at),
         "quota_error_count": store.quota_error_count,
+        "stream_failure_streak": request_state["stream_failure_streak"],
+        "retry_reason": request_state["retry_reason"],
         "request_count_24h": request_state["request_count_24h"],
         "last_request_at": request_state["last_request_at"],
         "last_request_summary": request_state["last_request_summary"],
@@ -924,6 +938,8 @@ def _dashboard_context() -> dict:
         "last_connected_at": _format_local_iso(store.last_connected_at),
         "last_quota_at": _format_local_iso(store.last_quota_at),
         "quota_error_count": store.quota_error_count,
+        "stream_failure_streak": request_state["stream_failure_streak"],
+        "retry_reason": request_state["retry_reason"],
         "request_count_24h": request_state["request_count_24h"],
         "last_request_at": request_state["last_request_at"],
         "last_request_summary": request_state["last_request_summary"],
