@@ -42,6 +42,9 @@ VEHICLE_FILE     = "/data/bmw_vehicles.json"   # cached vehicle list
 REFRESH_MARGIN_S = 300                          # refresh 5 min before expiry
 STATUS_STABLE_DELAY_S = 5
 STREAM_MIN_CONNECT_INTERVAL_S = 60
+BMW_MQTT_KEEPALIVE_S = 30
+BMW_MQTT_WS_PATH = "/mqtt"
+BMW_MQTT_FALLBACK_DISCONNECT_WINDOW_S = 75
 
 
 class BMWAuthError(Exception):
@@ -147,6 +150,11 @@ class BMWTokenStore:
         return events if isinstance(events, list) else []
 
     @property
+    def preferred_stream_transport(self) -> str:
+        value = str(self._data.get("preferred_stream_transport", "tcp") or "tcp").lower()
+        return value if value in {"tcp", "websockets"} else "tcp"
+
+    @property
     def auth_poll_interval_s(self) -> int:
         return int(self._data.get("auth_poll_interval_s", 0) or 0)
 
@@ -169,6 +177,12 @@ class BMWTokenStore:
 
     def set_auth_poll_interval(self, seconds: int):
         self.save({"auth_poll_interval_s": max(0, int(seconds or 0))})
+
+    def set_preferred_stream_transport(self, transport: str):
+        value = str(transport or "tcp").lower()
+        if value not in {"tcp", "websockets"}:
+            value = "tcp"
+        self.save({"preferred_stream_transport": value})
 
 
 # ── OAuth2 Device Flow ────────────────────────────────────────────────────────
@@ -504,7 +518,7 @@ class BMWMQTTBridge:
         {"prop": "mileage",                  "name": "Kilometerstand",          "icon": "mdi:counter",             "unit": "km",  "dc": "distance",  "sc": "total_increasing"},
         {"prop": "doorsState",               "name": "Türen",                   "icon": "mdi:car-door",            "unit": None,  "dc": None,        "sc": None},
         {"prop": "windowsState",             "name": "Fenster",                 "icon": "mdi:car-select",          "unit": None,  "dc": None,        "sc": None},
-        {"prop": "lockState",                "name": "Verriegelung",            "icon": "mdi:car-key",             "unit": None,  "dc": "lock",      "sc": None},
+        {"prop": "lockState",                "name": "Verriegelung",            "icon": "mdi:car-key",             "unit": None,  "dc": None,        "sc": None},
         {"prop": "hood",                     "name": "Motorhaube",              "icon": "mdi:car",                 "unit": None,  "dc": None,        "sc": None},
         {"prop": "trunk",                    "name": "Kofferraum",              "icon": "mdi:car-back",            "unit": None,  "dc": None,        "sc": None},
         {"prop": "climateActive",            "name": "Klimaanlage aktiv",       "icon": "mdi:air-conditioner",     "unit": None,  "dc": None,        "sc": None},
@@ -542,6 +556,9 @@ class BMWMQTTBridge:
         self._offline_timer: Optional[threading.Timer] = None
         self._next_retry_at = self.store.next_retry_at
         self._disconnect_expected = False
+        self._stream_transport = self.store.preferred_stream_transport
+        self._stream_connected_at_monotonic: Optional[float] = None
+        self._stream_message_count_at_connect = 0
 
         self.status        = "stopped"
         self.last_message  = None
@@ -636,20 +653,24 @@ class BMWMQTTBridge:
         if not gcid or not id_token:
             raise BMWAuthError("Missing GCID or id_token")
 
+        transport = self._stream_transport
         c = mqtt.Client(
             client_id=gcid,
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
             protocol=mqtt.MQTTv5,
+            transport="websockets" if transport == "websockets" else "tcp",
         )
         c.tls_set()
+        if transport == "websockets":
+            c.ws_set_options(path=BMW_MQTT_WS_PATH)
         c.username_pw_set(gcid, id_token)
         c.on_connect    = self._bmw_on_connect
         c.on_message    = self._bmw_on_message
         c.on_disconnect = self._bmw_on_disconnect
         self.store.set(last_stream_connect_attempt_at=time.time())
-        c.connect(BMW_MQTT_HOST, BMW_MQTT_PORT, keepalive=60)
+        c.connect(BMW_MQTT_HOST, BMW_MQTT_PORT, keepalive=BMW_MQTT_KEEPALIVE_S)
         self._bmw_client = c
-        log.info("BMW MQTT connecting as %s …", gcid)
+        log.info("BMW MQTT connecting as %s via %s …", gcid, transport)
 
     def _bmw_on_connect(self, client, userdata, flags, rc, props=None):
         reason = self._reason_text(rc)
@@ -666,9 +687,12 @@ class BMWMQTTBridge:
             return
         self._cancel_offline_timer()
         self._clear_retry_backoff()
+        self._stream_connected_at_monotonic = time.monotonic()
+        self._stream_message_count_at_connect = self.message_count
         self.store.set(
             last_connected_at=datetime.now(timezone.utc).isoformat(),
             quota_error_count=0,
+            preferred_stream_transport=self._stream_transport,
         )
         # Subscribe for all selected vehicles
         for v in self.vehicles:
@@ -680,11 +704,21 @@ class BMWMQTTBridge:
 
     def _bmw_on_disconnect(self, client, userdata, flags, rc, props=None):
         reason = self._reason_text(rc)
-        log.warning("BMW MQTT disconnected: %s", reason)
+        connected_for_s = None
+        if self._stream_connected_at_monotonic is not None:
+            connected_for_s = max(0, int(time.monotonic() - self._stream_connected_at_monotonic))
+        log.warning(
+            "BMW MQTT disconnected: %s%s",
+            reason,
+            f" after {connected_for_s}s via {self._stream_transport}" if connected_for_s is not None else "",
+        )
         if self._disconnect_expected or not self._running:
+            self._stream_connected_at_monotonic = None
             self._disconnect_expected = False
             self._schedule_offline_status(reason)
             return
+        self._maybe_switch_stream_transport(reason, connected_for_s)
+        self._stream_connected_at_monotonic = None
         self._set_status("reconnecting")
         self._set_retry_backoff(reason)
         self._schedule_offline_status(reason)
@@ -914,6 +948,7 @@ class BMWMQTTBridge:
 
     def _disconnect_clients(self):
         self._disconnect_expected = True
+        self._stream_connected_at_monotonic = None
         for client in (self._bmw_client, self._local_client):
             if not client:
                 continue
@@ -939,3 +974,23 @@ class BMWMQTTBridge:
         if reason_code is None:
             return "success"
         return str(reason_code)
+
+    def _maybe_switch_stream_transport(self, reason: str, connected_for_s: Optional[int]):
+        if connected_for_s is None:
+            return
+        if connected_for_s > BMW_MQTT_FALLBACK_DISCONNECT_WINDOW_S:
+            return
+        if self.message_count > self._stream_message_count_at_connect:
+            return
+        if "Unspecified error" not in reason:
+            return
+        next_transport = "websockets" if self._stream_transport == "tcp" else "tcp"
+        if next_transport == self._stream_transport:
+            return
+        log.warning(
+            "BMW MQTT fallback: switching stream transport from %s to %s after early disconnect",
+            self._stream_transport,
+            next_transport,
+        )
+        self._stream_transport = next_transport
+        self.store.set_preferred_stream_transport(next_transport)
