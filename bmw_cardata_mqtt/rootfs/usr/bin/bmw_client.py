@@ -42,6 +42,8 @@ VEHICLE_FILE     = "/data/bmw_vehicles.json"   # cached vehicle list
 REFRESH_MARGIN_S = 300                          # refresh 5 min before expiry
 STATUS_STABLE_DELAY_S = 5
 STREAM_MIN_CONNECT_INTERVAL_S = 60
+STREAM_EARLY_DISCONNECT_BACKOFF_S = 5 * 60
+QUOTA_ERROR_RESET_S = 4 * 60 * 60
 BMW_MQTT_KEEPALIVE_S = 30
 BMW_MQTT_WS_PATH = "/mqtt"
 BMW_MQTT_FALLBACK_DISCONNECT_WINDOW_S = 75
@@ -138,7 +140,22 @@ class BMWTokenStore:
 
     @property
     def quota_error_count(self) -> int:
-        return int(self._data.get("quota_error_count", 0) or 0)
+        count = int(self._data.get("quota_error_count", 0) or 0)
+        if count <= 0:
+            return 0
+        last_quota_at = self.last_quota_at
+        if not last_quota_at:
+            return count
+        try:
+            dt = datetime.fromisoformat(last_quota_at)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            age_s = (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds()
+            if age_s >= QUOTA_ERROR_RESET_S:
+                return 0
+        except ValueError:
+            return count
+        return count
 
     @property
     def last_stream_connect_attempt_at(self) -> float:
@@ -734,7 +751,10 @@ class BMWMQTTBridge:
         self._maybe_switch_stream_transport(reason, connected_for_s)
         self._stream_connected_at_monotonic = None
         self._set_status("reconnecting")
-        self._set_retry_backoff(reason)
+        if self._is_early_stream_disconnect(reason, connected_for_s):
+            self._set_retry_backoff("Early stream disconnect")
+        else:
+            self._set_retry_backoff(reason)
         self._schedule_offline_status(reason)
 
     def _bmw_on_message(self, client, userdata, msg: mqtt.MQTTMessage):
@@ -925,6 +945,9 @@ class BMWMQTTBridge:
         elif "Server busy" in reason:
             retry_reason = "server_busy"
             delay = 2 * 60
+        elif "Early stream disconnect" in reason:
+            retry_reason = "early_stream_disconnect"
+            delay = STREAM_EARLY_DISCONNECT_BACKOFF_S
         self._next_retry_at = time.time() + delay
         self._next_retry_reason = retry_reason
         self.store.set(
@@ -996,6 +1019,15 @@ class BMWMQTTBridge:
         if reason_code is None:
             return "success"
         return str(reason_code)
+
+    def _is_early_stream_disconnect(self, reason: str, connected_for_s: Optional[int]) -> bool:
+        if connected_for_s is None:
+            return False
+        if connected_for_s > BMW_MQTT_FALLBACK_DISCONNECT_WINDOW_S:
+            return False
+        if self.message_count > self._stream_message_count_at_connect:
+            return False
+        return "Quota exceeded" not in reason
 
     def _maybe_switch_stream_transport(self, reason: str, connected_for_s: Optional[int]):
         if connected_for_s is None:
