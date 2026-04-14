@@ -1,6 +1,6 @@
 name: "BMW CarData MQTT Bridge"
-description: "BMW CarData → Home Assistant MQTT Discovery. OAuth2-Setup, automatische Fahrzeugerkennung und Token-Refresh direkt im Addon."
-version: "3.2.14"
+description: "BMW CarData MQTT Bridge mit OAuth2-Setup, Streaming-Status, verbesserter Reconnect-Logik und Ingress-Streaming-Fix."
+version: "3.2.16"
 slug: "bmw_cardata_mqtt"
 init: false
 
@@ -14,11 +14,12 @@ hassio_api: false
 
 ingress: true
 ingress_port: 8099
+ingress_stream: true
 panel_icon: "mdi:car-connected"
 panel_title: "BMW CarData"
 
-# ── MQTT-Konfiguration (vorab, vor dem Start) ──────────────────────────────
-# VIN und Client-ID werden über das Webinterface gesetzt – nicht hier.
+# MQTT configuration before startup
+# VIN and Client-ID are set via the web UI, not here.
 options:
   mqtt_host: "core-mosquitto"
   mqtt_port: 1883
