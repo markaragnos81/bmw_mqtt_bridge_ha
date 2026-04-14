@@ -767,7 +767,7 @@ class BMWMQTTBridge:
         )
         # Subscribe for all selected vehicles
         for v in self.vehicles:
-            topic = f"{self.store.gcid}/{v['vin']}/#"
+            topic = f"{self.store.gcid}/{v['vin']}"
             client.subscribe(topic, qos=1)
             log.info("Subscribed: %s", topic)
         self._set_status("connected")
