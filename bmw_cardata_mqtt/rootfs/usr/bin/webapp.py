@@ -838,9 +838,10 @@ def _sse_stream():
     q: queue.Queue = queue.Queue(maxsize=20)
     _sse_queues.append(q)
     def generate():
+        yield "event: connected\ndata: {}\n\n"
         while True:
             try:
-                yield q.get(timeout=30)
+                yield q.get(timeout=10)
             except queue.Empty:
                 yield "event: heartbeat\ndata: {}\n\n"
     return Response(generate(), mimetype="text/event-stream",
