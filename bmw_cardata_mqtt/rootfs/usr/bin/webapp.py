@@ -322,6 +322,24 @@ def _stop_bridge():
         bridge = None
 
 
+def _mqtt_explorer_context() -> dict:
+    ov = load_override()
+    selected_vins = ov.get("selected_vins", []) or store.selected_vins
+    first_vin = selected_vins[0] if selected_vins else ""
+    gcid = store.gcid or ov.get("gcid", "")
+    id_token = store.id_token or ""
+    return {
+        "host": "customer.streaming-cardata.bmwgroup.com",
+        "port": 9000,
+        "transport": "tcp",
+        "username": gcid,
+        "password": id_token,
+        "topic": f"{gcid}/{first_vin}" if gcid and first_vin else "",
+        "selected_vins": selected_vins,
+        "token_exp": _format_local_timestamp(store.expires_at) if store.expires_at else "unbekannt",
+    }
+
+
 # ── Flask ─────────────────────────────────────────────────────────────────────
 app = Flask(__name__)
 app.secret_key = os.urandom(32)
@@ -380,6 +398,7 @@ input:focus{outline:none;border-color:var(--bmw);box-shadow:0 0 0 3px rgba(28,10
 hr{border:none;border-top:1px solid #f1f1f1;margin:.9rem 0}
 .mqtt-row{display:flex;justify-content:space-between;align-items:center;font-size:.83rem;padding:.3rem 0}
 .mqtt-key{color:#6b7280}.mqtt-val{font-weight:600;font-family:monospace}
+.secret-box{width:100%;min-height:110px;border:1.5px solid #d1d5db;border-radius:10px;padding:.75rem .85rem;font-size:.82rem;font-family:monospace;background:#f8fafc;resize:vertical}
 </style>
 """
 
@@ -606,6 +625,7 @@ PAGE = STYLE + """
       </form>
       {% endif %}
       <a href="{{ B }}/pick_again" class="btn btn-ghost btn-sm">🚗 Fahrzeugauswahl ändern</a>
+      <a href="{{ B }}/mqtt_debug" class="btn btn-ghost btn-sm">MQTT Explorer Daten</a>
       <form method="post" action="{{ B }}/reload_vehicles" style="display:inline">
         <button type="submit" class="btn btn-ghost btn-sm">↻ Fahrzeuge neu laden</button>
       </form>
@@ -656,6 +676,33 @@ PAGE = STYLE + """
       });
     }, 10000);
   </script>
+  {% elif phase == 'mqtt_debug' %}
+  <div class="card">
+    <h2>MQTT Explorer Debug</h2>
+    <div class="alert a-err" style="margin-bottom:.8rem">
+      Dieser Token ist das aktuelle BMW Stream-Passwort. Nur lokal verwenden und nicht weitergeben.
+    </div>
+    <div class="mqtt-row"><span class="mqtt-key">Host</span><span class="mqtt-val">{{ host }}</span></div>
+    <div class="mqtt-row"><span class="mqtt-key">Port</span><span class="mqtt-val">{{ port }}</span></div>
+    <div class="mqtt-row"><span class="mqtt-key">Transport</span><span class="mqtt-val">{{ transport }}</span></div>
+    <div class="mqtt-row"><span class="mqtt-key">Username / GCID</span><span class="mqtt-val">{{ username or '-' }}</span></div>
+    <div class="mqtt-row"><span class="mqtt-key">Topic</span><span class="mqtt-val">{{ topic or '-' }}</span></div>
+    <div class="mqtt-row"><span class="mqtt-key">Token gueltig bis</span><span class="mqtt-val">{{ token_exp }}</span></div>
+    <label for="mqtt-password">Password / id_token</label>
+    <textarea id="mqtt-password" class="secret-box" readonly>{{ password }}</textarea>
+    <div class="hint">TLS aktivieren. In MQTT Explorer als Topic idealerweise zuerst {{ topic or '&lt;gcid&gt;/&lt;vin&gt;' }} abonnieren.</div>
+    {% if selected_vins %}
+    <div class="hint" style="margin-top:.45rem">Ausgewaehlte VINs: {{ selected_vins|join(', ') }}</div>
+    {% endif %}
+    <div class="mt" style="display:flex;gap:.6rem;flex-wrap:wrap">
+      <button type="button" class="btn btn-primary btn-sm" onclick="navigator.clipboard.writeText(document.getElementById('mqtt-password').value)">Token kopieren</button>
+      <button type="button" class="btn btn-ghost btn-sm" onclick="navigator.clipboard.writeText('{{ username }}')">GCID kopieren</button>
+      {% if topic %}
+      <button type="button" class="btn btn-ghost btn-sm" onclick="navigator.clipboard.writeText('{{ topic }}')">Topic kopieren</button>
+      {% endif %}
+      <a href="{{ B }}/" class="btn btn-ghost btn-sm">Zurueck</a>
+    </div>
+  </div>
   {% endif %}
 </main>
 """
@@ -801,6 +848,13 @@ def pick_post():
     if should_auto_start():
         _maybe_start_bridge()
     return redirect(B() + "/")
+
+
+@app.route("/mqtt_debug")
+def mqtt_debug():
+    if not store.has_tokens:
+        return redirect(B() + "/setup")
+    return render("mqtt_debug", **_mqtt_explorer_context())
 
 
 @app.route("/pick_again")
