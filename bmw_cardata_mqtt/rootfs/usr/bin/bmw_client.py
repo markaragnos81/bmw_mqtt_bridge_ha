@@ -693,6 +693,15 @@ import paho.mqtt.client as mqtt
 
 
 class BMWMQTTBridge:
+    CANONICAL_PROPERTY_ALIASES = {
+        "vehicle.drivetrain.batteryManagement.header": "chargingLevelHv",
+        "vehicle.drivetrain.electricEngine.kombiRemainingElectricRange": "electricalRange",
+        "vehicle.vehicle.travelledDistance": "mileage",
+        "vehicle.drivetrain.fuelSystem.level": "fuelPercentage",
+        "vehicle.drivetrain.electricEngine.charging.status": "chargingStatus",
+        "vehicle.drivetrain.electricEngine.charging.connectionType": "chargingConnectionType",
+    }
+
     SENSORS = [
         {"prop": "fuelPercentage",          "name": "Kraftstoff",              "icon": "mdi:gas-station",         "unit": "%",   "dc": "battery",   "sc": "measurement"},
         {"prop": "chargingLevelHv",          "name": "Ladestand",               "icon": "mdi:battery-charging",    "unit": "%",   "dc": "battery",   "sc": "measurement"},
@@ -987,6 +996,8 @@ class BMWMQTTBridge:
                     if prop == "position" and isinstance(val, dict):
                         val = self._normalize_position(val)
                     pub(prop, val, item if isinstance(item, dict) else None)
+                    for alias in self._canonical_aliases(prop):
+                        pub(alias, val, item if isinstance(item, dict) else None)
                     if isinstance(val, dict):
                         for k, v in val.items():
                             pub(f"{prop}/{k}", v)
@@ -1006,6 +1017,8 @@ class BMWMQTTBridge:
                 if prop == "position" and isinstance(val, dict):
                     val = self._normalize_position(val)
                 pub(prop, val, item)
+                for alias in self._canonical_aliases(prop):
+                    pub(alias, val, item)
                 if isinstance(val, dict):
                     for k, v in val.items():
                         pub(f"{prop}/{k}", v)
@@ -1165,6 +1178,9 @@ class BMWMQTTBridge:
             "vehicle.drivetrain.electricengine.charging.connectiontype": "Ladeverbindung",
             "vehicle.drivetrain.electricengine.charging.ismsingleimmediatecharging": "Sofortladen aktiv",
             "vehicle.drivetrain.electricengine.charging.issingleimmediatecharging": "Sofortladen aktiv",
+            "vehicle.drivetrain.batterymanagement.header": "Akkustand",
+            "vehicle.drivetrain.batterymanagement.maxenergy": "Batterieenergie",
+            "vehicle.drivetrain.batterymanagement.batterysizemax": "Batteriegroesse",
             "vehicle.drivetrain.electricengine.kombiremainingelectricrange": "Elektrische Restreichweite",
             "vehicle.drivetrain.lastremainingrange": "Restreichweite",
             "vehicle.drivetrain.fuelsystem.level": "Tankfuellstand",
@@ -1177,6 +1193,13 @@ class BMWMQTTBridge:
             "vehicle.vehicle.preconditioning.error": "Vorkonditionierung Fehler",
             "vehicle.vehicle.preconditioning.isremoteenginerunning": "Fernstart aktiv",
             "vehicle.vehicle.preconditioning.isremoteenginestartallowed": "Fernstart erlaubt",
+            "vehicle.body.chargingport.status": "Ladeanschluss Status",
+            "vehicle.body.chargingport.dcstatus": "DC-Ladeanschluss Status",
+            "vehicle.body.flap.islocked": "Ladeklappe verriegelt",
+            "vehicle.body.flap.ispermanentlyunlocked": "Ladeklappe dauerhaft entriegelt",
+            "vehicle.powertrain.electric.battery.stateofcharge.target": "Ziel-Akkustand",
+            "vehicle.powertrain.electric.battery.stateofcharge.targetmin": "Minimaler Ziel-Akkustand",
+            "vehicle.powertrain.electric.battery.stateofcharge.targetsocforprofessionalmode": "Profi-Modus Ziel-Akkustand",
             "vehicle.powertrain.electri.battery.stateofcharge.target": "Ziel-Akkustand",
             "charginglevelhv": "Akkustand",
             "stateofcharge": "Akkustand",
@@ -1278,6 +1301,10 @@ class BMWMQTTBridge:
             labels = [re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", parts[-1]).strip()]
 
         return " ".join(labels)
+
+    def _canonical_aliases(self, prop: str) -> list[str]:
+        alias = self.CANONICAL_PROPERTY_ALIASES.get(prop)
+        return [alias] if alias and alias != prop else []
 
     def _dynamic_component_for(self, prop: str, value) -> str:
         if isinstance(value, bool):

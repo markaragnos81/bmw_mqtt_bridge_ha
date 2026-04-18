@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.2.27
+- Mapped `vehicle.drivetrain.batteryManagement.header` to the canonical `chargingLevelHv` topic so the streamed high-voltage SoC feeds the main charge sensor.
+- Improved friendly names for additional BMW charging and battery related entities.
+
 ## 3.2.26
 - Improved friendly names for common streamed BMW entities such as doors, windows, tire pressure, charging, range, and location values.
 
