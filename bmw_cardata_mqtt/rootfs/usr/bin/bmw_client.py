@@ -1151,6 +1151,83 @@ class BMWMQTTBridge:
         if not parts:
             return "BMW Wert"
 
+        prop_l = prop.lower()
+
+        exact_labels = {
+            "vehicle.cabin.door.status": "Tueren verriegelt",
+            "vehicle.body.hood.isopen": "Motorhaube offen",
+            "vehicle.body.trunk.isopen": "Kofferraum offen",
+            "vehicle.body.trunk.door.isopen": "Kofferraumklappe offen",
+            "vehicle.cabin.sunroof.status": "Schiebedach Status",
+            "vehicle.cabin.sunroof.overallstatus": "Schiebedach Gesamtstatus",
+            "vehicle.cabin.sunroof.tiltstatus": "Schiebedach Kippstatus",
+            "vehicle.drivetrain.electricengine.charging.status": "Ladestatus",
+            "vehicle.drivetrain.electricengine.charging.connectiontype": "Ladeverbindung",
+            "vehicle.drivetrain.electricengine.charging.ismsingleimmediatecharging": "Sofortladen aktiv",
+            "vehicle.drivetrain.electricengine.charging.issingleimmediatecharging": "Sofortladen aktiv",
+            "vehicle.drivetrain.electricengine.kombiremainingelectricrange": "Elektrische Restreichweite",
+            "vehicle.drivetrain.lastremainingrange": "Restreichweite",
+            "vehicle.drivetrain.fuelsystem.level": "Tankfuellstand",
+            "vehicle.drivetrain.fuelsystem.remainingfuel": "Restkraftstoff",
+            "vehicle.vehicle.travelleddistance": "Kilometerstand",
+            "vehicle.vehicle.avgspeed": "Durchschnittsgeschwindigkeit",
+            "vehicle.vehicle.timesetting": "Zeiteinstellung",
+            "vehicle.vehicle.preconditioning.activity": "Vorkonditionierung Aktivitaet",
+            "vehicle.vehicle.preconditioning.remainingtime": "Vorkonditionierung Restzeit",
+            "vehicle.vehicle.preconditioning.error": "Vorkonditionierung Fehler",
+            "vehicle.vehicle.preconditioning.isremoteenginerunning": "Fernstart aktiv",
+            "vehicle.vehicle.preconditioning.isremoteenginestartallowed": "Fernstart erlaubt",
+            "vehicle.powertrain.electri.battery.stateofcharge.target": "Ziel-Akkustand",
+            "charginglevelhv": "Akkustand",
+            "stateofcharge": "Akkustand",
+            "electricalrange": "Elektrische Reichweite",
+            "fuelpercentage": "Tankfuellstand",
+            "mileage": "Kilometerstand",
+            "position": "Standort",
+        }
+        if prop_l in exact_labels:
+            return exact_labels[prop_l]
+
+        door_window_match = re.match(
+            r"^vehicle\.cabin\.(door|window)\.(row[12])\.(driver|passenger)\.(isOpen|status)$",
+            prop,
+            flags=re.IGNORECASE,
+        )
+        if door_window_match:
+            kind, row, side, state = door_window_match.groups()
+            kind_label = "Tuer" if kind.lower() == "door" else "Fenster"
+            row_label = "vorne" if row.lower() == "row1" else "hinten"
+            side_label = "Fahrer" if side.lower() == "driver" else "Beifahrer"
+            suffix = "offen" if state.lower() == "isopen" else "Status"
+            return f"{kind_label} {side_label} {row_label} {suffix}"
+
+        tire_match = re.match(
+            r"^vehicle\.chassis\.axle\.(row[12])\.wheel\.(left|right)\.tire\.(pressure|pressureTarget)$",
+            prop,
+            flags=re.IGNORECASE,
+        )
+        if tire_match:
+            axle, side, metric = tire_match.groups()
+            axle_label = "vorne" if axle.lower() == "row1" else "hinten"
+            side_label = "links" if side.lower() == "left" else "rechts"
+            metric_label = "Reifendruck Soll" if metric.lower() == "pressuretarget" else "Reifendruck"
+            return f"{metric_label} {axle_label} {side_label}"
+
+        location_match = re.match(
+            r"^vehicle\.cabin\.infotainment\.navigation\.currentLocation\.(latitude|longitude|heading|altitude)$",
+            prop,
+            flags=re.IGNORECASE,
+        )
+        if location_match:
+            metric = location_match.group(1).lower()
+            label_map = {
+                "latitude": "Standort Breitengrad",
+                "longitude": "Standort Laengengrad",
+                "heading": "Standort Richtung",
+                "altitude": "Standort Hoehe",
+            }
+            return label_map[metric]
+
         ignored = {"vehicle", "cabin", "body", "drivetrain", "chassis", "electricEngine", "fuelSystem", "infotainment", "navigation", "currentLocation"}
         aliases = {
             "row1": "Vorne",
@@ -1178,6 +1255,7 @@ class BMWMQTTBridge:
             "stateOfCharge": "Akkustand",
             "hood": "Motorhaube",
             "trunk": "Kofferraum",
+            "charging": "Laden",
             "door": "Tuer",
             "window": "Fenster",
             "sunroof": "Schiebedach",

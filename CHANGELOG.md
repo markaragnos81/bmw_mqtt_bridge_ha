@@ -1,5 +1,8 @@
 # Changelog
 
+## 3.2.26
+- Improved friendly names for common streamed BMW entities such as doors, windows, tire pressure, charging, range, and location values.
+
 ## 3.2.25
 - Improved friendly names for dynamically discovered Home Assistant entities while keeping original BMW MQTT topic names unchanged.
 
