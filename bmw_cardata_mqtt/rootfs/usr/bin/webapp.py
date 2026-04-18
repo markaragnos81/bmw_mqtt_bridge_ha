@@ -690,7 +690,8 @@ PAGE = STYLE + """
     <div class="mqtt-row"><span class="mqtt-key">Token gueltig bis</span><span class="mqtt-val">{{ token_exp }}</span></div>
     <label for="mqtt-password">Password / id_token</label>
     <textarea id="mqtt-password" class="secret-box" readonly>{{ password }}</textarea>
-    <div class="hint">TLS aktivieren. In MQTT Explorer als Topic idealerweise zuerst {{ topic or '&lt;gcid&gt;/&lt;vin&gt;' }} abonnieren.</div>
+    <div class="hint">TLS aktivieren. In MQTT Explorer das exakte Topic {{ topic or '&lt;gcid&gt;/&lt;vin&gt;' }} abonnieren, keine Wildcards verwenden.</div>
+    <div class="hint" style="margin-top:.45rem">BMW sendet nur bei Aenderungen und nur fuer Datenpunkte, die im CarData-Portal unter Streaming explizit aktiviert wurden.</div>
     {% if selected_vins %}
     <div class="hint" style="margin-top:.45rem">Ausgewaehlte VINs: {{ selected_vins|join(', ') }}</div>
     {% endif %}

@@ -720,12 +720,15 @@ class BMWMQTTBridge:
     def _connect_bmw(self):
         gcid     = self.store.gcid
         id_token = self.store.id_token
+        mqtt_client_id = self.store.get().get("client_id")
         if not gcid or not id_token:
             raise BMWAuthError("Missing GCID or id_token")
+        if not mqtt_client_id:
+            raise BMWAuthError("Missing BMW client_id")
 
         transport = self._stream_transport
         c = mqtt.Client(
-            client_id=gcid,
+            client_id=mqtt_client_id,
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
             protocol=mqtt.MQTTv5,
             transport="websockets" if transport == "websockets" else "tcp",
@@ -740,7 +743,7 @@ class BMWMQTTBridge:
         self.store.set(last_stream_connect_attempt_at=time.time())
         c.connect(BMW_MQTT_HOST, BMW_MQTT_PORT, keepalive=BMW_MQTT_KEEPALIVE_S)
         self._bmw_client = c
-        log.info("BMW MQTT connecting as %s via %s …", gcid, transport)
+        log.info("BMW MQTT connecting as %s with client_id %s via %s …", gcid, mqtt_client_id, transport)
 
     def _bmw_on_connect(self, client, userdata, flags, rc, props=None):
         reason = self._reason_text(rc)
@@ -834,9 +837,23 @@ class BMWMQTTBridge:
             self._local_client.publish(f"{base}/{key}", payload, retain=True)
 
         if isinstance(data, dict):
-            items = data.get("data", [data])
-            if not isinstance(items, list):
+            items = data.get("data")
+            if isinstance(items, dict):
+                for prop, item in items.items():
+                    val = item.get("value", item) if isinstance(item, dict) else item
+                    if prop == "position" and isinstance(val, dict):
+                        val = self._normalize_position(val)
+                    pub(prop, val)
+                    if isinstance(val, dict):
+                        for k, v in val.items():
+                            pub(f"{prop}/{k}", v)
+                return
+
+            if items is None:
                 items = [data]
+            elif not isinstance(items, list):
+                items = [items]
+
             for item in items:
                 if not isinstance(item, dict):
                     pub(event_name, item)
@@ -846,7 +863,6 @@ class BMWMQTTBridge:
                 if prop == "position" and isinstance(val, dict):
                     val = self._normalize_position(val)
                 pub(prop, val)
-                # Also emit sub-keys for HA template convenience
                 if isinstance(val, dict):
                     for k, v in val.items():
                         pub(f"{prop}/{k}", v)
