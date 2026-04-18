@@ -848,10 +848,10 @@ class BMWMQTTBridge:
         base = f"{self.prefix}vehicles/{vin}"
         ts   = self.last_message
 
-        def pub(key: str, val):
+        def pub(key: str, val, meta: Optional[dict] = None):
             payload = json.dumps({"value": val, "timestamp": ts})
             self._local_client.publish(f"{base}/{key}", payload, retain=True)
-            self._publish_dynamic_discovery(vin, key)
+            self._publish_dynamic_discovery(vin, key, val, meta or {})
 
         if isinstance(data, dict):
             items = data.get("data")
@@ -860,7 +860,7 @@ class BMWMQTTBridge:
                     val = item.get("value", item) if isinstance(item, dict) else item
                     if prop == "position" and isinstance(val, dict):
                         val = self._normalize_position(val)
-                    pub(prop, val)
+                    pub(prop, val, item if isinstance(item, dict) else None)
                     if isinstance(val, dict):
                         for k, v in val.items():
                             pub(f"{prop}/{k}", v)
@@ -879,7 +879,7 @@ class BMWMQTTBridge:
                 val  = item.get("value", item)
                 if prop == "position" and isinstance(val, dict):
                     val = self._normalize_position(val)
-                pub(prop, val)
+                pub(prop, val, item)
                 if isinstance(val, dict):
                     for k, v in val.items():
                         pub(f"{prop}/{k}", v)
@@ -940,7 +940,7 @@ class BMWMQTTBridge:
         )
         log.info("Discovery published: %s (%s)", vin, model)
 
-    def _publish_dynamic_discovery(self, vin: str, prop: str):
+    def _publish_dynamic_discovery(self, vin: str, prop: str, value, meta: dict):
         if not self._local_client or not prop:
             return
 
@@ -956,21 +956,88 @@ class BMWMQTTBridge:
         model = vehicle.get("model", "BMW") if vehicle else "BMW"
         safe_prop = quote(prop, safe="").lower()
         uid = f"bmw_{vin.lower()}_{safe_prop}"
+        component = self._dynamic_component_for(prop, value)
         cfg = {
             "name": f"{model} {prop}",
             "unique_id": uid,
             "state_topic": f"{self.prefix}vehicles/{vin}/{prop}",
-            "value_template": "{{ value_json.value }}",
             "icon": "mdi:car-info",
             "availability": self._avail(),
             "device": self._device_info(vin, model),
         }
+
+        if component == "binary_sensor":
+            cfg["payload_on"] = "ON"
+            cfg["payload_off"] = "OFF"
+            cfg["value_template"] = "{{ 'ON' if value_json.value else 'OFF' }}"
+            device_class = self._dynamic_binary_device_class(prop)
+            if device_class:
+                cfg["device_class"] = device_class
+        else:
+            cfg["value_template"] = "{{ value_json.value }}"
+            unit = meta.get("unit") if isinstance(meta, dict) else None
+            if unit:
+                cfg["unit_of_measurement"] = unit
+            device_class, state_class = self._dynamic_sensor_classes(prop, value, unit)
+            if device_class:
+                cfg["device_class"] = device_class
+            if state_class:
+                cfg["state_class"] = state_class
+
         self._local_client.publish(
-            f"homeassistant/sensor/{uid}/config",
+            f"homeassistant/{component}/{uid}/config",
             json.dumps(cfg),
             retain=True,
         )
         self._dynamic_discovery_keys.add(key)
+
+    def _dynamic_component_for(self, prop: str, value) -> str:
+        if isinstance(value, bool):
+            return "binary_sensor"
+        if prop.endswith(".isOpen") or prop.endswith(".isClosed") or prop.endswith(".isRunning"):
+            return "binary_sensor"
+        return "sensor"
+
+    def _dynamic_binary_device_class(self, prop: str) -> Optional[str]:
+        prop_l = prop.lower()
+        if ".door." in prop_l or prop_l.endswith(".door.isopen"):
+            return "door"
+        if ".window." in prop_l:
+            return "window"
+        if ".hood." in prop_l or ".trunk." in prop_l:
+            return "opening"
+        if ".preconditioning." in prop_l or ".climatization" in prop_l:
+            return "running"
+        return None
+
+    def _dynamic_sensor_classes(self, prop: str, value, unit: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+        prop_l = prop.lower()
+        device_class = None
+        state_class = None
+
+        if isinstance(value, (int, float)):
+            state_class = "measurement"
+
+        if unit == "%":
+            device_class = "battery"
+        elif unit in {"km", "mi"}:
+            device_class = "distance"
+        elif unit in {"bar", "kpa"}:
+            device_class = "pressure"
+        elif unit in {"min", "minutes"}:
+            device_class = "duration"
+        elif unit in {"km/h", "mph"}:
+            device_class = "speed"
+        elif prop_l.endswith("latitude") or prop_l.endswith("longitude"):
+            device_class = None
+        elif prop_l.endswith("heading"):
+            device_class = None
+
+        if prop_l.endswith("travelleddistance"):
+            state_class = "total_increasing"
+            device_class = "distance"
+
+        return device_class, state_class
 
     def _normalize_position(self, payload: dict) -> dict:
         latitude = payload.get("latitude", payload.get("lat"))
