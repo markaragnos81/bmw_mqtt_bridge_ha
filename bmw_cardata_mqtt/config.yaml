@@ -1,6 +1,6 @@
 name: "BMW CarData MQTT Bridge"
 description: "BMW CarData MQTT Bridge mit OAuth2-Setup, Streaming-Status, verbesserter Reconnect-Logik und Ingress-Streaming-Fix."
-version: "3.2.27"
+version: "3.2.28"
 slug: "bmw_cardata_mqtt"
 init: false
 

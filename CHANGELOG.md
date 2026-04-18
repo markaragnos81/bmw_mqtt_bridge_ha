@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.2.28
+- Replaced the ad-hoc Home Assistant entity naming logic with a dedicated BMW property label catalog.
+- Added broad coverage for the official BMW CarData property families, including charging, battery, service, body, cabin, tire, seat, climate timer, and charging-port fields.
+- Kept original BMW MQTT topic names unchanged while making dynamic Home Assistant entities much more readable.
+
 ## 3.2.27
 - Mapped `vehicle.drivetrain.batteryManagement.header` to the canonical `chargingLevelHv` topic so the streamed high-voltage SoC feeds the main charge sensor.
 - Improved friendly names for additional BMW charging and battery related entities.

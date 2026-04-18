@@ -23,6 +23,7 @@ from typing import Callable, Optional
 import re
 
 import requests
+from bmw_property_labels import friendly_bmw_property_name
 
 log = logging.getLogger("bmw.client")
 
@@ -1122,7 +1123,7 @@ class BMWMQTTBridge:
         uid = f"bmw_{vin.lower()}_{safe_prop}"
         component = self._dynamic_component_for(prop, value)
         cfg = {
-            "name": self._friendly_prop_name(prop),
+            "name": friendly_bmw_property_name(prop),
             "unique_id": uid,
             "state_topic": f"{self.prefix}vehicles/{vin}/{prop}",
             "icon": "mdi:car-info",
@@ -1158,149 +1159,6 @@ class BMWMQTTBridge:
     def _discovery_safe_id(self, value: str) -> str:
         safe = re.sub(r"[^a-zA-Z0-9_-]+", "_", value or "").strip("_").lower()
         return safe or "unknown"
-
-    def _friendly_prop_name(self, prop: str) -> str:
-        parts = [part for part in (prop or "").split(".") if part]
-        if not parts:
-            return "BMW Wert"
-
-        prop_l = prop.lower()
-
-        exact_labels = {
-            "vehicle.cabin.door.status": "Tueren verriegelt",
-            "vehicle.body.hood.isopen": "Motorhaube offen",
-            "vehicle.body.trunk.isopen": "Kofferraum offen",
-            "vehicle.body.trunk.door.isopen": "Kofferraumklappe offen",
-            "vehicle.cabin.sunroof.status": "Schiebedach Status",
-            "vehicle.cabin.sunroof.overallstatus": "Schiebedach Gesamtstatus",
-            "vehicle.cabin.sunroof.tiltstatus": "Schiebedach Kippstatus",
-            "vehicle.drivetrain.electricengine.charging.status": "Ladestatus",
-            "vehicle.drivetrain.electricengine.charging.connectiontype": "Ladeverbindung",
-            "vehicle.drivetrain.electricengine.charging.ismsingleimmediatecharging": "Sofortladen aktiv",
-            "vehicle.drivetrain.electricengine.charging.issingleimmediatecharging": "Sofortladen aktiv",
-            "vehicle.drivetrain.batterymanagement.header": "Akkustand",
-            "vehicle.drivetrain.batterymanagement.maxenergy": "Batterieenergie",
-            "vehicle.drivetrain.batterymanagement.batterysizemax": "Batteriegroesse",
-            "vehicle.drivetrain.electricengine.kombiremainingelectricrange": "Elektrische Restreichweite",
-            "vehicle.drivetrain.lastremainingrange": "Restreichweite",
-            "vehicle.drivetrain.fuelsystem.level": "Tankfuellstand",
-            "vehicle.drivetrain.fuelsystem.remainingfuel": "Restkraftstoff",
-            "vehicle.vehicle.travelleddistance": "Kilometerstand",
-            "vehicle.vehicle.avgspeed": "Durchschnittsgeschwindigkeit",
-            "vehicle.vehicle.timesetting": "Zeiteinstellung",
-            "vehicle.vehicle.preconditioning.activity": "Vorkonditionierung Aktivitaet",
-            "vehicle.vehicle.preconditioning.remainingtime": "Vorkonditionierung Restzeit",
-            "vehicle.vehicle.preconditioning.error": "Vorkonditionierung Fehler",
-            "vehicle.vehicle.preconditioning.isremoteenginerunning": "Fernstart aktiv",
-            "vehicle.vehicle.preconditioning.isremoteenginestartallowed": "Fernstart erlaubt",
-            "vehicle.body.chargingport.status": "Ladeanschluss Status",
-            "vehicle.body.chargingport.dcstatus": "DC-Ladeanschluss Status",
-            "vehicle.body.flap.islocked": "Ladeklappe verriegelt",
-            "vehicle.body.flap.ispermanentlyunlocked": "Ladeklappe dauerhaft entriegelt",
-            "vehicle.powertrain.electric.battery.stateofcharge.target": "Ziel-Akkustand",
-            "vehicle.powertrain.electric.battery.stateofcharge.targetmin": "Minimaler Ziel-Akkustand",
-            "vehicle.powertrain.electric.battery.stateofcharge.targetsocforprofessionalmode": "Profi-Modus Ziel-Akkustand",
-            "vehicle.powertrain.electri.battery.stateofcharge.target": "Ziel-Akkustand",
-            "charginglevelhv": "Akkustand",
-            "stateofcharge": "Akkustand",
-            "electricalrange": "Elektrische Reichweite",
-            "fuelpercentage": "Tankfuellstand",
-            "mileage": "Kilometerstand",
-            "position": "Standort",
-        }
-        if prop_l in exact_labels:
-            return exact_labels[prop_l]
-
-        door_window_match = re.match(
-            r"^vehicle\.cabin\.(door|window)\.(row[12])\.(driver|passenger)\.(isOpen|status)$",
-            prop,
-            flags=re.IGNORECASE,
-        )
-        if door_window_match:
-            kind, row, side, state = door_window_match.groups()
-            kind_label = "Tuer" if kind.lower() == "door" else "Fenster"
-            row_label = "vorne" if row.lower() == "row1" else "hinten"
-            side_label = "Fahrer" if side.lower() == "driver" else "Beifahrer"
-            suffix = "offen" if state.lower() == "isopen" else "Status"
-            return f"{kind_label} {side_label} {row_label} {suffix}"
-
-        tire_match = re.match(
-            r"^vehicle\.chassis\.axle\.(row[12])\.wheel\.(left|right)\.tire\.(pressure|pressureTarget)$",
-            prop,
-            flags=re.IGNORECASE,
-        )
-        if tire_match:
-            axle, side, metric = tire_match.groups()
-            axle_label = "vorne" if axle.lower() == "row1" else "hinten"
-            side_label = "links" if side.lower() == "left" else "rechts"
-            metric_label = "Reifendruck Soll" if metric.lower() == "pressuretarget" else "Reifendruck"
-            return f"{metric_label} {axle_label} {side_label}"
-
-        location_match = re.match(
-            r"^vehicle\.cabin\.infotainment\.navigation\.currentLocation\.(latitude|longitude|heading|altitude)$",
-            prop,
-            flags=re.IGNORECASE,
-        )
-        if location_match:
-            metric = location_match.group(1).lower()
-            label_map = {
-                "latitude": "Standort Breitengrad",
-                "longitude": "Standort Laengengrad",
-                "heading": "Standort Richtung",
-                "altitude": "Standort Hoehe",
-            }
-            return label_map[metric]
-
-        ignored = {"vehicle", "cabin", "body", "drivetrain", "chassis", "electricEngine", "fuelSystem", "infotainment", "navigation", "currentLocation"}
-        aliases = {
-            "row1": "Vorne",
-            "row2": "Hinten",
-            "driver": "Fahrer",
-            "passenger": "Beifahrer",
-            "left": "Links",
-            "right": "Rechts",
-            "front": "Vorne",
-            "rear": "Hinten",
-            "isOpen": "Offen",
-            "isClosed": "Geschlossen",
-            "isRunning": "Aktiv",
-            "status": "Status",
-            "overallStatus": "Status",
-            "tiltStatus": "Kippstatus",
-            "pressure": "Druck",
-            "pressureTarget": "Zieldruck",
-            "remainingTime": "Restzeit",
-            "travelledDistance": "Strecke",
-            "avgSpeed": "Durchschnittsgeschwindigkeit",
-            "lastRemainingRange": "Restreichweite",
-            "kombiRemainingElectricRange": "Elektrische Reichweite",
-            "chargingLevelHv": "Akkustand",
-            "stateOfCharge": "Akkustand",
-            "hood": "Motorhaube",
-            "trunk": "Kofferraum",
-            "charging": "Laden",
-            "door": "Tuer",
-            "window": "Fenster",
-            "sunroof": "Schiebedach",
-            "preConditioning": "Vorkonditionierung",
-            "timeSetting": "Zeiteinstellung",
-        }
-
-        labels: list[str] = []
-        for part in parts:
-            if part in ignored:
-                continue
-            token = aliases.get(part)
-            if token is None:
-                spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", part)
-                token = spaced.replace("_", " ").strip()
-            if token and token not in labels:
-                labels.append(token)
-
-        if not labels:
-            labels = [re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", parts[-1]).strip()]
-
-        return " ".join(labels)
 
     def _canonical_aliases(self, prop: str) -> list[str]:
         alias = self.CANONICAL_PROPERTY_ALIASES.get(prop)
