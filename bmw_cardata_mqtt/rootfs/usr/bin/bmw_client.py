@@ -1109,7 +1109,7 @@ class BMWMQTTBridge:
         uid = f"bmw_{vin.lower()}_{safe_prop}"
         component = self._dynamic_component_for(prop, value)
         cfg = {
-            "name": f"{model} {prop}",
+            "name": self._friendly_prop_name(prop),
             "unique_id": uid,
             "state_topic": f"{self.prefix}vehicles/{vin}/{prop}",
             "icon": "mdi:car-info",
@@ -1145,6 +1145,61 @@ class BMWMQTTBridge:
     def _discovery_safe_id(self, value: str) -> str:
         safe = re.sub(r"[^a-zA-Z0-9_-]+", "_", value or "").strip("_").lower()
         return safe or "unknown"
+
+    def _friendly_prop_name(self, prop: str) -> str:
+        parts = [part for part in (prop or "").split(".") if part]
+        if not parts:
+            return "BMW Wert"
+
+        ignored = {"vehicle", "cabin", "body", "drivetrain", "chassis", "electricEngine", "fuelSystem", "infotainment", "navigation", "currentLocation"}
+        aliases = {
+            "row1": "Vorne",
+            "row2": "Hinten",
+            "driver": "Fahrer",
+            "passenger": "Beifahrer",
+            "left": "Links",
+            "right": "Rechts",
+            "front": "Vorne",
+            "rear": "Hinten",
+            "isOpen": "Offen",
+            "isClosed": "Geschlossen",
+            "isRunning": "Aktiv",
+            "status": "Status",
+            "overallStatus": "Status",
+            "tiltStatus": "Kippstatus",
+            "pressure": "Druck",
+            "pressureTarget": "Zieldruck",
+            "remainingTime": "Restzeit",
+            "travelledDistance": "Strecke",
+            "avgSpeed": "Durchschnittsgeschwindigkeit",
+            "lastRemainingRange": "Restreichweite",
+            "kombiRemainingElectricRange": "Elektrische Reichweite",
+            "chargingLevelHv": "Akkustand",
+            "stateOfCharge": "Akkustand",
+            "hood": "Motorhaube",
+            "trunk": "Kofferraum",
+            "door": "Tuer",
+            "window": "Fenster",
+            "sunroof": "Schiebedach",
+            "preConditioning": "Vorkonditionierung",
+            "timeSetting": "Zeiteinstellung",
+        }
+
+        labels: list[str] = []
+        for part in parts:
+            if part in ignored:
+                continue
+            token = aliases.get(part)
+            if token is None:
+                spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", part)
+                token = spaced.replace("_", " ").strip()
+            if token and token not in labels:
+                labels.append(token)
+
+        if not labels:
+            labels = [re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", parts[-1]).strip()]
+
+        return " ".join(labels)
 
     def _dynamic_component_for(self, prop: str, value) -> str:
         if isinstance(value, bool):

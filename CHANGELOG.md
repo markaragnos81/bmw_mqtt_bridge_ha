@@ -1,5 +1,8 @@
 # Changelog
 
+## 3.2.25
+- Improved friendly names for dynamically discovered Home Assistant entities while keeping original BMW MQTT topic names unchanged.
+
 ## 3.2.24
 - Added a REST snapshot fallback for missing BMW core values such as SoC, range, mileage, fuel level, and position.
 - Cached raw vehicle API responses locally so fallback values can be reused without unnecessary extra requests.
