@@ -40,6 +40,7 @@ BMW_ONEID_URL    = "https://customer.bmwgroup.com/oneid/"
 
 TOKEN_FILE       = "/data/bmw_tokens.json"
 VEHICLE_FILE     = "/data/bmw_vehicles.json"   # cached vehicle list
+VEHICLE_RAW_FILE = "/data/bmw_vehicles_raw.json"
 REFRESH_MARGIN_S = 300                          # refresh 5 min before expiry
 STATUS_STABLE_DELAY_S = 5
 STREAM_MIN_CONNECT_INTERVAL_S = 60
@@ -88,7 +89,7 @@ class BMWTokenStore:
 
     def clear(self):
         self._data = {}
-        for p in (self.path, VEHICLE_FILE):
+        for p in (self.path, VEHICLE_FILE, VEHICLE_RAW_FILE):
             if os.path.exists(p):
                 os.remove(p)
 
@@ -472,6 +473,8 @@ def fetch_vehicles(store: BMWTokenStore, force_refresh: bool = False) -> list[di
             if vehicles:
                 with open(VEHICLE_FILE, "w") as f:
                     json.dump({"_ts": time.time(), "vehicles": vehicles}, f, indent=2)
+                with open(VEHICLE_RAW_FILE, "w") as f:
+                    json.dump({"_ts": time.time(), "raw": raw}, f, indent=2)
                 log.info("Fetched %d vehicle(s) from BMW mappings API", len(vehicles))
                 return vehicles
         raise BMWAuthError(
@@ -488,9 +491,36 @@ def fetch_vehicles(store: BMWTokenStore, force_refresh: bool = False) -> list[di
 
     with open(VEHICLE_FILE, "w") as f:
         json.dump({"_ts": time.time(), "vehicles": vehicles}, f, indent=2)
+    with open(VEHICLE_RAW_FILE, "w") as f:
+        json.dump({"_ts": time.time(), "raw": raw}, f, indent=2)
 
     log.info("Fetched %d vehicle(s) from BMW API", len(vehicles))
     return vehicles
+
+
+def fetch_vehicle_snapshot(store: BMWTokenStore, vin: str, force_refresh: bool = False) -> dict:
+    raw = None
+    if not force_refresh and os.path.exists(VEHICLE_RAW_FILE):
+        try:
+            with open(VEHICLE_RAW_FILE) as f:
+                cached = json.load(f)
+            if time.time() - cached.get("_ts", 0) < 86400:
+                raw = cached.get("raw")
+        except Exception:
+            raw = None
+
+    if raw is None:
+        fetch_vehicles(store, force_refresh=True)
+        try:
+            with open(VEHICLE_RAW_FILE) as f:
+                raw = json.load(f).get("raw")
+        except Exception:
+            raw = None
+
+    vehicle_payload = _find_vehicle_payload(raw, vin)
+    if not vehicle_payload:
+        return {}
+    return _extract_vehicle_snapshot(vehicle_payload)
 
 
 def _normalize_vehicles(raw) -> list[dict]:
@@ -560,6 +590,101 @@ def _normalize_vehicle_mappings(raw) -> list[dict]:
             "color": item.get("color", ""),
         })
     return result
+
+
+def _find_vehicle_payload(raw, vin: str) -> Optional[dict]:
+    if isinstance(raw, dict):
+        if raw.get("vin") == vin:
+            return raw
+        for key in ("vehicles", "data", "mappings", "items", "results"):
+            nested = raw.get(key)
+            found = _find_vehicle_payload(nested, vin)
+            if found:
+                return found
+        for value in raw.values():
+            found = _find_vehicle_payload(value, vin)
+            if found:
+                return found
+    elif isinstance(raw, list):
+        for item in raw:
+            found = _find_vehicle_payload(item, vin)
+            if found:
+                return found
+    return None
+
+
+def _iter_leaf_values(data, path: tuple[str, ...] = ()):
+    if isinstance(data, dict):
+        for key, value in data.items():
+            yield from _iter_leaf_values(value, path + (str(key),))
+    elif isinstance(data, list):
+        for index, value in enumerate(data):
+            yield from _iter_leaf_values(value, path + (str(index),))
+    else:
+        yield path, data
+
+
+def _extract_vehicle_snapshot(vehicle_payload: dict) -> dict:
+    leaves = list(_iter_leaf_values(vehicle_payload))
+
+    def normalize_path(path: tuple[str, ...]) -> str:
+        return re.sub(r"[^a-z0-9]+", "", ".".join(path).lower())
+
+    normalized = [(path, normalize_path(path), value) for path, value in leaves]
+
+    def pick(*aliases: str):
+        alias_norms = [re.sub(r"[^a-z0-9]+", "", alias.lower()) for alias in aliases]
+        for _path, norm, value in normalized:
+            if any(norm == alias or norm.endswith(alias) for alias in alias_norms):
+                return value
+        return None
+
+    snapshot = {}
+    charging_level = pick(
+        "chargingLevelHv",
+        "stateOfCharge",
+        "soc",
+        "electricVehicleStateOfCharge",
+        "batteryLevel",
+        "currentChargeLevel",
+    )
+    if charging_level is not None:
+        snapshot["chargingLevelHv"] = charging_level
+
+    electrical_range = pick(
+        "electricRange",
+        "remainingElectricRange",
+        "kombiRemainingElectricRange",
+        "batteryRange",
+    )
+    if electrical_range is not None:
+        snapshot["electricalRange"] = electrical_range
+
+    fuel_level = pick(
+        "fuelPercentage",
+        "fuelLevel",
+        "fuelSystemLevel",
+    )
+    if fuel_level is not None:
+        snapshot["fuelPercentage"] = fuel_level
+
+    mileage = pick(
+        "mileage",
+        "odometer",
+        "travelledDistance",
+    )
+    if mileage is not None:
+        snapshot["mileage"] = mileage
+
+    latitude = pick("latitude", "currentLocationLatitude", "positionLatitude")
+    longitude = pick("longitude", "currentLocationLongitude", "positionLongitude")
+    if latitude is not None and longitude is not None:
+        snapshot["position"] = {
+            "latitude": latitude,
+            "longitude": longitude,
+        }
+
+    return snapshot
 
 
 # ── MQTT Bridge ───────────────────────────────────────────────────────────────
@@ -715,6 +840,7 @@ class BMWMQTTBridge:
         # Publish discovery for all selected vehicles
         for v in self.vehicles:
             self._publish_discovery(v["vin"], v.get("model", "BMW"))
+        self._publish_rest_snapshots()
         log.info("Local broker connected, discovery published for %d vehicle(s)", len(self.vehicles))
 
     # ── BMW MQTT ──────────────────────────────────────────────────────────────
@@ -939,6 +1065,31 @@ class BMWMQTTBridge:
             }), retain=True
         )
         log.info("Discovery published: %s (%s)", vin, model)
+
+    def _publish_rest_snapshots(self):
+        for vehicle in self.vehicles:
+            vin = vehicle.get("vin")
+            if not vin:
+                continue
+            try:
+                snapshot = fetch_vehicle_snapshot(self.store, vin, force_refresh=False)
+                if not snapshot:
+                    continue
+                self._publish_snapshot_values(vin, snapshot)
+                log.info("Published REST snapshot fallback for %s with %d field(s)", vin, len(snapshot))
+            except Exception as exc:
+                log.warning("REST snapshot fallback failed for %s: %s", vin, exc)
+
+    def _publish_snapshot_values(self, vin: str, snapshot: dict):
+        ts = datetime.now(timezone.utc).isoformat()
+        base = f"{self.prefix}vehicles/{vin}"
+        for key, value in snapshot.items():
+            payload = json.dumps({
+                "value": value,
+                "timestamp": ts,
+                "source": "rest_snapshot",
+            })
+            self._local_client.publish(f"{base}/{key}", payload, retain=True)
 
     def _publish_dynamic_discovery(self, vin: str, prop: str, value, meta: dict):
         if not self._local_client or not prop:
