@@ -20,6 +20,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from typing import Callable, Optional
+from urllib.parse import quote
 
 import requests
 
@@ -622,6 +623,7 @@ class BMWMQTTBridge:
         self._stream_transport = self.store.preferred_stream_transport
         self._stream_connected_at_monotonic: Optional[float] = None
         self._stream_message_count_at_connect = 0
+        self._dynamic_discovery_keys: set[tuple[str, str]] = set()
 
         if self._next_retry_at > 0 and self._next_retry_reason not in {"quota_exceeded", "circuit_breaker_open"}:
             log.info(
@@ -835,6 +837,7 @@ class BMWMQTTBridge:
         def pub(key: str, val):
             payload = json.dumps({"value": val, "timestamp": ts})
             self._local_client.publish(f"{base}/{key}", payload, retain=True)
+            self._publish_dynamic_discovery(vin, key)
 
         if isinstance(data, dict):
             items = data.get("data")
@@ -922,6 +925,38 @@ class BMWMQTTBridge:
             }), retain=True
         )
         log.info("Discovery published: %s (%s)", vin, model)
+
+    def _publish_dynamic_discovery(self, vin: str, prop: str):
+        if not self._local_client or not prop:
+            return
+
+        known_props = {sensor["prop"] for sensor in self.SENSORS}
+        if prop in known_props:
+            return
+
+        key = (vin, prop)
+        if key in self._dynamic_discovery_keys:
+            return
+
+        vehicle = next((v for v in self.vehicles if v.get("vin") == vin), None)
+        model = vehicle.get("model", "BMW") if vehicle else "BMW"
+        safe_prop = quote(prop, safe="").lower()
+        uid = f"bmw_{vin.lower()}_{safe_prop}"
+        cfg = {
+            "name": f"{model} {prop}",
+            "unique_id": uid,
+            "state_topic": f"{self.prefix}vehicles/{vin}/{prop}",
+            "value_template": "{{ value_json.value }}",
+            "icon": "mdi:car-info",
+            "availability": self._avail(),
+            "device": self._device_info(vin, model),
+        }
+        self._local_client.publish(
+            f"homeassistant/sensor/{uid}/config",
+            json.dumps(cfg),
+            retain=True,
+        )
+        self._dynamic_discovery_keys.add(key)
 
     def _normalize_position(self, payload: dict) -> dict:
         latitude = payload.get("latitude", payload.get("lat"))
