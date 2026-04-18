@@ -742,6 +742,7 @@ class BMWMQTTBridge:
         c.on_connect    = self._bmw_on_connect
         c.on_message    = self._bmw_on_message
         c.on_disconnect = self._bmw_on_disconnect
+        c.on_subscribe  = self._bmw_on_subscribe
         self.store.set(last_stream_connect_attempt_at=time.time())
         c.connect(BMW_MQTT_HOST, BMW_MQTT_PORT, keepalive=BMW_MQTT_KEEPALIVE_S)
         self._bmw_client = c
@@ -802,11 +803,24 @@ class BMWMQTTBridge:
             self._set_retry_backoff(reason)
         self._schedule_offline_status(reason)
 
+    def _bmw_on_subscribe(self, client, userdata, mid, reason_codes, props=None):
+        try:
+            reasons = [str(code) for code in (reason_codes or [])]
+        except Exception:
+            reasons = []
+        log.info(
+            "BMW MQTT SUBACK mid=%s reasons=%s",
+            mid,
+            reasons or ["unknown"],
+        )
+
     def _bmw_on_message(self, client, userdata, msg: mqtt.MQTTMessage):
         try:
             payload_str = msg.payload.decode("utf-8", errors="replace")
             self.last_message  = datetime.now(timezone.utc).isoformat()
             self.message_count += 1
+            preview = payload_str if len(payload_str) <= 240 else payload_str[:240] + "…"
+            log.info("BMW MQTT RX topic=%s bytes=%d payload=%s", msg.topic, len(msg.payload), preview)
             if self.status != "connected":
                 self._set_status("connected")
             self._publish_status("online", connected=True, reason="message_received")
