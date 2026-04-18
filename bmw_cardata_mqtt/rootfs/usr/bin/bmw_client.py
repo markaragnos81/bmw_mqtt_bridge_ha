@@ -20,7 +20,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from typing import Callable, Optional
-from urllib.parse import quote
+import re
 
 import requests
 
@@ -954,7 +954,7 @@ class BMWMQTTBridge:
 
         vehicle = next((v for v in self.vehicles if v.get("vin") == vin), None)
         model = vehicle.get("model", "BMW") if vehicle else "BMW"
-        safe_prop = quote(prop, safe="").lower()
+        safe_prop = self._discovery_safe_id(prop)
         uid = f"bmw_{vin.lower()}_{safe_prop}"
         component = self._dynamic_component_for(prop, value)
         cfg = {
@@ -990,6 +990,10 @@ class BMWMQTTBridge:
             retain=True,
         )
         self._dynamic_discovery_keys.add(key)
+
+    def _discovery_safe_id(self, value: str) -> str:
+        safe = re.sub(r"[^a-zA-Z0-9_-]+", "_", value or "").strip("_").lower()
+        return safe or "unknown"
 
     def _dynamic_component_for(self, prop: str, value) -> str:
         if isinstance(value, bool):
