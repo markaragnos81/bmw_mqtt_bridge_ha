@@ -1,5 +1,8 @@
 # Changelog
 
+## 3.2.29
+- Normalized streamed unit labels so Home Assistant shows `%` instead of textual values like `percent`.
+
 ## 3.2.28
 - Replaced the ad-hoc Home Assistant entity naming logic with a dedicated BMW property label catalog.
 - Added broad coverage for the official BMW CarData property families, including charging, battery, service, body, cabin, tire, seat, climate timer, and charging-port fields.

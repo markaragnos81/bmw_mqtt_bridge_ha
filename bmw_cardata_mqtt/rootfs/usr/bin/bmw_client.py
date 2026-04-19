@@ -1056,7 +1056,8 @@ class BMWMQTTBridge:
                 "availability":   self._avail(),
                 "device":         self._device_info(vin, model),
             }
-            if s["unit"]: cfg["unit_of_measurement"] = s["unit"]
+            unit = self._normalize_unit(s["unit"])
+            if unit: cfg["unit_of_measurement"] = unit
             if s["dc"]:   cfg["device_class"]         = s["dc"]
             if s["sc"]:   cfg["state_class"]           = s["sc"]
             self._local_client.publish(
@@ -1140,7 +1141,7 @@ class BMWMQTTBridge:
                 cfg["device_class"] = device_class
         else:
             cfg["value_template"] = "{{ value_json.value }}"
-            unit = meta.get("unit") if isinstance(meta, dict) else None
+            unit = self._normalize_unit(meta.get("unit") if isinstance(meta, dict) else None)
             if unit:
                 cfg["unit_of_measurement"] = unit
             device_class, state_class = self._dynamic_sensor_classes(prop, value, unit)
@@ -1159,6 +1160,17 @@ class BMWMQTTBridge:
     def _discovery_safe_id(self, value: str) -> str:
         safe = re.sub(r"[^a-zA-Z0-9_-]+", "_", value or "").strip("_").lower()
         return safe or "unknown"
+
+    def _normalize_unit(self, unit: Optional[str]) -> Optional[str]:
+        if unit is None:
+            return None
+        raw = str(unit).strip()
+        if not raw:
+            return None
+        return {
+            "percent": "%",
+            "percentage": "%",
+        }.get(raw.lower(), raw)
 
     def _canonical_aliases(self, prop: str) -> list[str]:
         alias = self.CANONICAL_PROPERTY_ALIASES.get(prop)
