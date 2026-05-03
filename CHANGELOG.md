@@ -1,9 +1,14 @@
 # Changelog
 
+## 3.2.32
+- Reduced the periodic HV SoC REST fallback cadence so the BMW vehicle API is polled more gently.
+- Tightened HV SoC snapshot extraction so fallback refreshes avoid unrelated values such as 12V battery charge state.
+
 ## 3.2.31
 - Fallback to plain MQTT/TCP when the persisted BMW stream transport is `websockets` and the connect attempt fails immediately with a WebSocket handshake error.
 - Attempt a guarded token refresh after BMW connect errors that look auth-related even when the locally stored expiry time has not elapsed yet.
 - Periodically refresh the HV battery SoC from the BMW vehicle API when the streamed `chargingLevelHv` value has gone stale.
+- Tightened HV SoC snapshot extraction so fallback refreshes avoid unrelated values such as 12V battery charge state.
 
 ## 3.2.30
 - Fallback to plain MQTT/TCP when the persisted BMW stream transport is `websockets` and the connect attempt fails immediately with a WebSocket handshake error.

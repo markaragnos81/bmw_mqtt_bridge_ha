@@ -51,8 +51,8 @@ STREAM_FAILURE_RESET_S = 6 * 60 * 60
 CIRCUIT_BREAKER_THRESHOLD = 6
 CIRCUIT_BREAKER_DELAY_S = 2 * 60 * 60
 CONNECT_ERROR_TOKEN_REFRESH_COOLDOWN_S = 10 * 60
-REST_SNAPSHOT_REFRESH_INTERVAL_S = 10 * 60
-REST_SNAPSHOT_STALE_AFTER_S = 20 * 60
+REST_SNAPSHOT_REFRESH_INTERVAL_S = 30 * 60
+REST_SNAPSHOT_STALE_AFTER_S = 60 * 60
 REST_SNAPSHOT_TARGET_PROPS = frozenset({"chargingLevelHv"})
 SLEEP_SLICE_S = 1
 BMW_MQTT_KEEPALIVE_S = 30
@@ -635,24 +635,56 @@ def _extract_vehicle_snapshot(vehicle_payload: dict) -> dict:
     def normalize_path(path: tuple[str, ...]) -> str:
         return re.sub(r"[^a-z0-9]+", "", ".".join(path).lower())
 
-    normalized = [(path, normalize_path(path), value) for path, value in leaves]
+    normalized = [
+        (path, ".".join(str(part).lower() for part in path), normalize_path(path), value)
+        for path, value in leaves
+    ]
 
     def pick(*aliases: str):
         alias_norms = [re.sub(r"[^a-z0-9]+", "", alias.lower()) for alias in aliases]
-        for _path, norm, value in normalized:
+        for _path, _dotted, norm, value in normalized:
             if any(norm == alias or norm.endswith(alias) for alias in alias_norms):
                 return value
         return None
 
+    def pick_hv_soc():
+        specs = [
+            (("chargingLevelHv",), (), ("electricalsystem.battery", "trip.segment.end")),
+            (("batteryManagement.header",), ("drivetrain.batterymanagement",), ("trip.segment.end",)),
+            (("electricVehicleStateOfCharge",), (), ("electricalsystem.battery", "trip.segment.end")),
+            (("currentChargeLevel",), (), ("electricalsystem.battery", "trip.segment.end")),
+            (
+                ("batteryLevel",),
+                ("drivetrain", "powertrain.electric", "tractionbattery"),
+                ("electricalsystem.battery", "trip.segment.end"),
+            ),
+            (
+                ("stateOfCharge", "soc"),
+                ("drivetrain", "powertrain.electric", "tractionbattery"),
+                ("electricalsystem.battery", "trip.segment.end", ".target", "battery48v"),
+            ),
+        ]
+        for aliases, required_any, forbidden in specs:
+            alias_norms = [re.sub(r"[^a-z0-9]+", "", alias.lower()) for alias in aliases]
+            for _path, dotted, norm, value in normalized:
+                if any(token in dotted for token in forbidden):
+                    continue
+                if required_any and not any(token in dotted for token in required_any):
+                    continue
+                if any(norm == alias or norm.endswith(alias) for alias in alias_norms):
+                    if isinstance(value, (int, float)) and 0 <= value <= 100:
+                        return value
+                    if isinstance(value, str):
+                        try:
+                            parsed = float(value.strip())
+                        except ValueError:
+                            continue
+                        if 0 <= parsed <= 100:
+                            return parsed
+        return None
+
     snapshot = {}
-    charging_level = pick(
-        "chargingLevelHv",
-        "stateOfCharge",
-        "soc",
-        "electricVehicleStateOfCharge",
-        "batteryLevel",
-        "currentChargeLevel",
-    )
+    charging_level = pick_hv_soc()
     if charging_level is not None:
         snapshot["chargingLevelHv"] = charging_level
 
