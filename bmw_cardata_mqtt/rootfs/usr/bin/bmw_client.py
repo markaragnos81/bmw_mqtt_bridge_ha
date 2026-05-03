@@ -50,6 +50,7 @@ QUOTA_ERROR_RESET_S = 4 * 60 * 60
 STREAM_FAILURE_RESET_S = 6 * 60 * 60
 CIRCUIT_BREAKER_THRESHOLD = 6
 CIRCUIT_BREAKER_DELAY_S = 2 * 60 * 60
+CONNECT_ERROR_TOKEN_REFRESH_COOLDOWN_S = 10 * 60
 SLEEP_SLICE_S = 1
 BMW_MQTT_KEEPALIVE_S = 30
 BMW_MQTT_WS_PATH = "/mqtt"
@@ -824,8 +825,12 @@ class BMWMQTTBridge:
                 log.error("Bridge loop: %s", exc)
                 self._set_status("error")
                 self._publish_status("offline", connected=False, reason=f"bridge_error:{exc}")
+                refreshed_tokens = self._maybe_refresh_tokens_for_connect_exception(exc)
+                switched_transport = self._maybe_switch_transport_for_connect_exception(exc)
                 if "Quota exceeded" in str(exc):
                     self._set_retry_backoff("Quota exceeded")
+                elif refreshed_tokens or switched_transport:
+                    self.store.set(last_stream_connect_attempt_at=0)
 
             if self._running:
                 self._disconnect_clients()
@@ -1398,6 +1403,48 @@ class BMWMQTTBridge:
             time.sleep(min(SLEEP_SLICE_S, remaining))
             remaining -= SLEEP_SLICE_S
         return self._running
+
+    def _maybe_switch_transport_for_connect_exception(self, exc: Exception) -> bool:
+        message = str(exc)
+        if "WebSocket handshake error" not in message:
+            return False
+        if self._stream_transport != "websockets":
+            return False
+        log.warning(
+            "BMW MQTT fallback: switching stream transport from %s to tcp after connect error: %s",
+            self._stream_transport,
+            message,
+        )
+        self._stream_transport = "tcp"
+        self.store.set_preferred_stream_transport("tcp")
+        return True
+
+    def _maybe_refresh_tokens_for_connect_exception(self, exc: Exception) -> bool:
+        message = str(exc)
+        refreshable_errors = (
+            "WebSocket handshake error",
+            "Not authorized",
+            "Unauthorized",
+            "Bad user name or password",
+        )
+        if not any(token in message for token in refreshable_errors):
+            return False
+        if not self.store.refresh_token:
+            return False
+        last_refresh_at = float(self.store.get().get("last_connect_error_refresh_at", 0) or 0)
+        age_s = time.time() - last_refresh_at
+        if last_refresh_at > 0 and age_s < CONNECT_ERROR_TOKEN_REFRESH_COOLDOWN_S:
+            log.info(
+                "Skipping forced token refresh after connect error; cooldown active for %d more s",
+                int(CONNECT_ERROR_TOKEN_REFRESH_COOLDOWN_S - age_s),
+            )
+            return False
+        log.warning("Attempting token refresh after BMW connect error: %s", message)
+        self.store.set(last_connect_error_refresh_at=time.time())
+        if not refresh_tokens(self.store):
+            return False
+        self.store.set(last_stream_connect_attempt_at=0)
+        return True
 
     def _is_early_stream_disconnect(self, reason: str, connected_for_s: Optional[int]) -> bool:
         if connected_for_s is None:
