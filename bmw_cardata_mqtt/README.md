@@ -9,6 +9,8 @@ Bridges BMW CarData MQTT telemetry into Home Assistant using MQTT discovery.
 - MQTT v5 BMW broker connection
 - Token refresh using the BMW `refresh_token`
 - Automatic reconnect/watchdog handling
+- Automatic fallback from WebSocket transport to plain MQTT/TCP when BMW rejects the WebSocket handshake
+- Guarded token refresh retry for auth-like BMW connect errors even if the locally stored token expiry has not elapsed yet
 - MQTT discovery for Home Assistant sensors
 - Ingress web UI for setup
 
@@ -19,3 +21,12 @@ Bridges BMW CarData MQTT telemetry into Home Assistant using MQTT discovery.
 3. Enter your BMW CarData `Client-ID`.
 4. Enter your BMW CarData stream `GCID` from `Show Connection Details`.
 5. Complete the BMW login and select your vehicle(s).
+
+## Troubleshooting
+
+If the add-on logs repeated BMW stream connect failures such as `WebSocket handshake error`, the bridge now:
+
+1. Tries a token refresh once for auth-like connect failures.
+2. Falls back from `websockets` to plain `tcp` if the WebSocket handshake is rejected.
+
+In the add-on log, look for lines such as `Attempting token refresh after BMW connect error`, `Tokens refreshed`, or the transport fallback warning to confirm the recovery path was triggered.
