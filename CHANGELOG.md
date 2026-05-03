@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 3.2.30
 - Fallback to plain MQTT/TCP when the persisted BMW stream transport is `websockets` and the connect attempt fails immediately with a WebSocket handshake error.
 - Attempt a guarded token refresh after BMW connect errors that look auth-related even when the locally stored expiry time has not elapsed yet.
 
