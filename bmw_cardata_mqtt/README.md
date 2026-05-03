@@ -11,6 +11,7 @@ Bridges BMW CarData MQTT telemetry into Home Assistant using MQTT discovery.
 - Automatic reconnect/watchdog handling
 - Automatic fallback from WebSocket transport to plain MQTT/TCP when BMW rejects the WebSocket handshake
 - Guarded token refresh retry for auth-like BMW connect errors even if the locally stored token expiry has not elapsed yet
+- Periodic REST fallback refresh for the HV battery SoC when the streamed value has gone stale
 - MQTT discovery for Home Assistant sensors
 - Ingress web UI for setup
 
@@ -30,3 +31,5 @@ If the add-on logs repeated BMW stream connect failures such as `WebSocket hands
 2. Falls back from `websockets` to plain `tcp` if the WebSocket handshake is rejected.
 
 In the add-on log, look for lines such as `Attempting token refresh after BMW connect error`, `Tokens refreshed`, or the transport fallback warning to confirm the recovery path was triggered.
+
+If the Home Assistant SoC entity updates too rarely, the bridge now also refreshes `chargingLevelHv` from the BMW vehicle API when the streamed SoC has been stale for a while. Look for log lines such as `Published REST snapshot refresh` to confirm the fallback refresh was used.

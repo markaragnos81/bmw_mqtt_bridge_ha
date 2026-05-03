@@ -51,6 +51,9 @@ STREAM_FAILURE_RESET_S = 6 * 60 * 60
 CIRCUIT_BREAKER_THRESHOLD = 6
 CIRCUIT_BREAKER_DELAY_S = 2 * 60 * 60
 CONNECT_ERROR_TOKEN_REFRESH_COOLDOWN_S = 10 * 60
+REST_SNAPSHOT_REFRESH_INTERVAL_S = 10 * 60
+REST_SNAPSHOT_STALE_AFTER_S = 20 * 60
+REST_SNAPSHOT_TARGET_PROPS = frozenset({"chargingLevelHv"})
 SLEEP_SLICE_S = 1
 BMW_MQTT_KEEPALIVE_S = 30
 BMW_MQTT_WS_PATH = "/mqtt"
@@ -753,12 +756,14 @@ class BMWMQTTBridge:
         self._running     = False
         self._thread:     Optional[threading.Thread] = None
         self._offline_timer: Optional[threading.Timer] = None
+        self._rest_snapshot_timer: Optional[threading.Timer] = None
         self._next_retry_at = self.store.next_retry_at
         self._next_retry_reason = self.store.next_retry_reason
         self._disconnect_expected = False
         self._stream_transport = self.store.preferred_stream_transport
         self._stream_connected_at_monotonic: Optional[float] = None
         self._stream_message_count_at_connect = 0
+        self._stream_property_updated_at: dict[tuple[str, str], float] = {}
         self._dynamic_discovery_keys: set[tuple[str, str]] = set()
 
         if self._next_retry_at > 0 and self._next_retry_reason not in {"quota_exceeded", "circuit_breaker_open"}:
@@ -791,6 +796,7 @@ class BMWMQTTBridge:
     def stop(self):
         self._running = False
         self._cancel_offline_timer()
+        self._cancel_rest_snapshot_timer()
         self._set_status("stopped")
         self._publish_status("offline", connected=False, reason="stopped")
         self._disconnect_clients()
@@ -919,6 +925,7 @@ class BMWMQTTBridge:
             log.info("Subscribed: %s", topic)
         self._set_status("connected")
         self._publish_status("online", connected=True, reason="connected")
+        self._schedule_rest_snapshot_refresh()
 
     def _bmw_on_disconnect(self, client, userdata, flags, rc, props=None):
         reason = self._reason_text(rc)
@@ -992,6 +999,7 @@ class BMWMQTTBridge:
         def pub(key: str, val, meta: Optional[dict] = None):
             payload = json.dumps({"value": val, "timestamp": ts})
             self._local_client.publish(f"{base}/{key}", payload, retain=True)
+            self._stream_property_updated_at[(vin, key)] = time.time()
             self._publish_dynamic_discovery(vin, key, val, meta or {})
 
         if isinstance(data, dict):
@@ -1100,6 +1108,39 @@ class BMWMQTTBridge:
             except Exception as exc:
                 log.warning("REST snapshot fallback failed for %s: %s", vin, exc)
 
+    def _publish_stale_rest_snapshot_fallbacks(self):
+        if not self._running or not self._local_client:
+            return
+        for vehicle in self.vehicles:
+            vin = vehicle.get("vin")
+            if not vin:
+                continue
+            stale_props = [
+                prop for prop in REST_SNAPSHOT_TARGET_PROPS
+                if self._rest_snapshot_refresh_needed(vin, prop)
+            ]
+            if not stale_props:
+                continue
+            try:
+                snapshot = fetch_vehicle_snapshot(self.store, vin, force_refresh=True)
+                if not snapshot:
+                    continue
+                filtered = {
+                    prop: snapshot[prop]
+                    for prop in stale_props
+                    if prop in snapshot and snapshot[prop] is not None
+                }
+                if not filtered:
+                    continue
+                self._publish_snapshot_values(vin, filtered)
+                log.info(
+                    "Published REST snapshot refresh for %s with stale field(s): %s",
+                    vin,
+                    ", ".join(sorted(filtered)),
+                )
+            except Exception as exc:
+                log.warning("REST snapshot refresh failed for %s: %s", vin, exc)
+
     def _publish_snapshot_values(self, vin: str, snapshot: dict):
         ts = datetime.now(timezone.utc).isoformat()
         base = f"{self.prefix}vehicles/{vin}"
@@ -1110,6 +1151,31 @@ class BMWMQTTBridge:
                 "source": "rest_snapshot",
             })
             self._local_client.publish(f"{base}/{key}", payload, retain=True)
+
+    def _rest_snapshot_refresh_needed(self, vin: str, prop: str) -> bool:
+        last_stream_at = self._stream_property_updated_at.get((vin, prop), 0.0)
+        if last_stream_at <= 0:
+            return True
+        return (time.time() - last_stream_at) >= REST_SNAPSHOT_STALE_AFTER_S
+
+    def _schedule_rest_snapshot_refresh(self):
+        self._cancel_rest_snapshot_timer()
+        if not self._running:
+            return
+        self._rest_snapshot_timer = threading.Timer(
+            REST_SNAPSHOT_REFRESH_INTERVAL_S,
+            self._run_rest_snapshot_refresh,
+        )
+        self._rest_snapshot_timer.daemon = True
+        self._rest_snapshot_timer.start()
+
+    def _run_rest_snapshot_refresh(self):
+        self._rest_snapshot_timer = None
+        try:
+            self._publish_stale_rest_snapshot_fallbacks()
+        finally:
+            if self._running and self.status == "connected":
+                self._schedule_rest_snapshot_refresh()
 
     def _publish_dynamic_discovery(self, vin: str, prop: str, value, meta: dict):
         if not self._local_client or not prop:
@@ -1295,6 +1361,11 @@ class BMWMQTTBridge:
             self._offline_timer.cancel()
             self._offline_timer = None
 
+    def _cancel_rest_snapshot_timer(self):
+        if self._rest_snapshot_timer:
+            self._rest_snapshot_timer.cancel()
+            self._rest_snapshot_timer = None
+
     def _set_retry_backoff(self, reason: str):
         failure_streak = self.store.record_stream_failure()
         delay = 30
@@ -1371,6 +1442,7 @@ class BMWMQTTBridge:
     def _disconnect_clients(self):
         self._disconnect_expected = True
         self._stream_connected_at_monotonic = None
+        self._cancel_rest_snapshot_timer()
         for client in (self._bmw_client, self._local_client):
             if not client:
                 continue
